@@ -14,6 +14,7 @@ import discord
 from discord import app_commands
 
 from research_radar.bot.commands.digest import register_digest_command
+from research_radar.bot.commands.gap import register_gap_commands
 from research_radar.bot.commands.paper import register_paper_command
 from research_radar.bot.commands.ping import register_ping_command
 from research_radar.bot.commands.read import register_read_command
@@ -49,6 +50,14 @@ class DigestCommandRegistrationService(Protocol):
     async def build_on_demand(self) -> object: ...
 
 
+class GapCommandRegistrationService(Protocol):
+    """Minimum surface required to register the Discord gap commands."""
+
+    async def analyze_gaps(self, topic: str, count: int = 1) -> object: ...
+
+    def get_candidate_detail(self, candidate_id: str) -> tuple[object, list[object]]: ...
+
+
 class ResearchRadarBot(discord.Client):
     """Minimal slash-command Discord client for the single-user application."""
 
@@ -62,6 +71,7 @@ class ResearchRadarBot(discord.Client):
         watch_service: WatchCommandRegistrationService | None = None,
         reader_service: ReaderCommandRegistrationService | None = None,
         digest_service: DigestCommandRegistrationService | None = None,
+        gap_service: GapCommandRegistrationService | None = None,
     ) -> None:
         super().__init__(intents=_application_intents())
         self.settings = settings
@@ -79,6 +89,8 @@ class ResearchRadarBot(discord.Client):
             register_read_command(self.tree, reader_service)
         if digest_service is not None:
             register_digest_command(self.tree, digest_service)
+        if gap_service is not None:
+            register_gap_commands(self.tree, gap_service)
 
     async def setup_hook(self) -> None:
         """Synchronize slash commands before connecting to the gateway."""
@@ -149,6 +161,7 @@ def create_bot(
     watch_service: WatchCommandRegistrationService | None = None,
     reader_service: ReaderCommandRegistrationService | None = None,
     digest_service: DigestCommandRegistrationService | None = None,
+    gap_service: GapCommandRegistrationService | None = None,
 ) -> ResearchRadarBot:
     """Construct a bot without requiring a token or a live Discord connection."""
 
@@ -160,6 +173,7 @@ def create_bot(
         watch_service=watch_service,
         reader_service=reader_service,
         digest_service=digest_service,
+        gap_service=gap_service,
     )
 
 
@@ -172,6 +186,7 @@ def run_bot(
     watch_service: WatchCommandRegistrationService | None = None,
     reader_service: ReaderCommandRegistrationService | None = None,
     digest_service: DigestCommandRegistrationService | None = None,
+    gap_service: GapCommandRegistrationService | None = None,
 ) -> None:
     """Launch the Discord client after explicitly validating its required token."""
 
@@ -183,6 +198,7 @@ def run_bot(
         watch_service=watch_service,
         reader_service=reader_service,
         digest_service=digest_service,
+        gap_service=gap_service,
     )
     bot.run(settings.require_discord_token(), log_handler=None)
 
