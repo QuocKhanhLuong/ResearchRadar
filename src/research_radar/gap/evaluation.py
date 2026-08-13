@@ -41,14 +41,16 @@ class EvaluationGapMiner:
     ) -> list[CandidateGap]:
         """Identify evaluation conditions rarely or never evaluated in the scoped corpus."""
 
-        if len(corpus.cards) < 2:
+        total_cards_count = len(corpus.cards)
+        if total_cards_count < 2:
             return []
 
         paper_title_map = {p.id: p.title for p in corpus.papers}
 
-        # Collect methods and explicit evaluation conditions per card
+        # Collect methods and evaluation conditions per card
         methods_by_paper: dict[str, list[str]] = defaultdict(list)
         eval_conditions_by_paper: dict[str, list[str]] = defaultdict(list)
+        cards_with_extracted_conditions: set[str] = set()
 
         for stored_card in corpus.cards:
             card = stored_card.card
@@ -57,14 +59,32 @@ class EvaluationGapMiner:
             if card.methods:
                 methods_by_paper[pid].extend(card.methods)
 
-            # Look for evaluation conditions in metrics, limitations, and failure cases
-            all_text = " ".join(
+            # Check structured evaluation_conditions
+            if card.evaluation_conditions:
+                for item in card.evaluation_conditions:
+                    if item.status == "observed" and item.value.strip():
+                        eval_conditions_by_paper[pid].append(item.value.strip().lower())
+                        cards_with_extracted_conditions.add(pid)
+                    elif item.status in {"observed", "explicitly_absent"}:
+                        cards_with_extracted_conditions.add(pid)
+
+            # Also check attributable text in metrics, limitations, failure_cases
+            attributable_text = " ".join(
                 card.metrics + card.limitations + card.failure_cases
             ).lower()
 
+            if attributable_text.strip():
+                cards_with_extracted_conditions.add(pid)
+
             for cond in STANDARD_EVALUATION_CONDITIONS:
-                if cond in all_text:
+                if cond in attributable_text:
                     eval_conditions_by_paper[pid].append(cond)
+
+        # Check extraction coverage threshold (>= 50% of cards must have extracted condition data)
+        extraction_coverage = len(cards_with_extracted_conditions) / max(1, total_cards_count)
+        if extraction_coverage < 0.5:
+            # Unknown-heavy corpus: insufficient extraction coverage to infer evaluation gaps
+            return []
 
         # Count method paper frequencies
         method_counts: dict[str, set[str]] = defaultdict(set)
@@ -81,15 +101,19 @@ class EvaluationGapMiner:
             if len(pids) < 2:
                 continue
 
-            # Check which standard evaluation conditions are missing for this method family
-            evaluated_conditions: set[str] = set()
+            # Check which standard evaluation conditions are observed for this method family
+            observed_conditions: set[str] = set()
             for pid in pids:
-                evaluated_conditions.update(eval_conditions_by_paper[pid])
+                for cond_val in eval_conditions_by_paper[pid]:
+                    for std_cond in STANDARD_EVALUATION_CONDITIONS:
+                        if std_cond in cond_val or cond_val in std_cond:
+                            observed_conditions.add(std_cond)
 
             for cond in STANDARD_EVALUATION_CONDITIONS:
-                if cond in evaluated_conditions:
+                if cond in observed_conditions:
                     continue
 
+                # Target condition has 0 observed evidence for this method family!
                 gap_id = generate_gap_id(
                     "evaluation", topic, f"{_slug(method)}-{_slug(cond)}"
                 )
@@ -116,10 +140,7 @@ class EvaluationGapMiner:
                             paper_title=paper_title,
                             evidence_kind="supporting",
                             claim_or_field="methods",
-                            supporting_text=(
-                                f"Method '{method}' evaluated without explicit '{cond}' "
-                                f"testing in {paper_title}"
-                            ),
+                            supporting_text=f"Method '{method}' used in {paper_title}",
                         )
                     )
 
@@ -128,7 +149,7 @@ class EvaluationGapMiner:
                     corpus_paper_ids=list(corpus.corpus_paper_ids),
                     corpus_description=(
                         f"Evaluation analysis for '{topic}' across "
-                        f"{len(corpus.cards)} PaperCards"
+                        f"{total_cards_count} PaperCards"
                     ),
                     supporting_evidence=supporting_evidence,
                     conflicting_evidence=[],
@@ -142,7 +163,7 @@ class EvaluationGapMiner:
                     ),
                     (
                         f"Analysis is bounded by the retrieved corpus of "
-                        f"{len(corpus.corpus_paper_ids)} stored papers."
+                        f"{total_cards_count} stored papers."
                     ),
                 ]
 
@@ -161,7 +182,7 @@ class EvaluationGapMiner:
                         importance_score=None,
                         feasibility_score=None,
                         confidence=0.45,
-                        search_scope=f"Evaluation Analysis over {len(corpus.cards)} PaperCards",
+                        search_scope=f"Evaluation Analysis over {total_cards_count} PaperCards",
                         caveats=caveats,
                         provenance=provenance,
                         review_status="candidate",

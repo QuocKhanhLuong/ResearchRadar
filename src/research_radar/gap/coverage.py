@@ -23,7 +23,7 @@ def _slug(text: str) -> str:
 
 
 class CoverageGapMiner:
-    """Mine sparse matrix combinations across attributable method x dimension matrix."""
+    """Mine sparse matrix combinations across attributable method x dimension matrices."""
 
     def mine_coverage_gaps(
         self, topic: str, corpus: ScopedCorpusResult
@@ -33,13 +33,24 @@ class CoverageGapMiner:
         if len(corpus.cards) < 2:
             return []
 
-        # 1. Collect attributable dimension values per paper card
+        total_cards_count = len(corpus.cards)
+        paper_title_map = {p.id: p.title for p in corpus.papers}
+
+        # Collect methods per paper card
         card_methods: dict[str, list[str]] = defaultdict(list)
+
+        # Collect distinct dimension items with observed status
         card_tasks: dict[str, list[str]] = defaultdict(list)
         card_datasets: dict[str, list[str]] = defaultdict(list)
+        card_modalities: dict[str, list[str]] = defaultdict(list)
+        card_metrics: dict[str, list[str]] = defaultdict(list)
         card_conditions: dict[str, list[str]] = defaultdict(list)
 
-        paper_title_map = {p.id: p.title for p in corpus.papers}
+        cards_with_tasks: set[str] = set()
+        cards_with_datasets: set[str] = set()
+        cards_with_modalities: set[str] = set()
+        cards_with_metrics: set[str] = set()
+        cards_with_conditions: set[str] = set()
 
         for stored_card in corpus.cards:
             card = stored_card.card
@@ -48,16 +59,45 @@ class CoverageGapMiner:
             if card.methods:
                 card_methods[pid].extend(card.methods)
 
-            if card.problem:
-                card_tasks[pid].append(card.problem)
+            # Tasks
+            if card.tasks:
+                for item in card.tasks:
+                    if item.status == "observed" and item.value.strip():
+                        card_tasks[pid].append(item.value.strip())
+                        cards_with_tasks.add(pid)
+            elif card.problem:
+                card_tasks[pid].append(card.problem.strip())
+                cards_with_tasks.add(pid)
 
+            # Datasets
             if card.datasets:
-                card_datasets[pid].extend(card.datasets)
+                for d in card.datasets:
+                    if d.strip():
+                        card_datasets[pid].append(d.strip())
+                        cards_with_datasets.add(pid)
 
+            # Modalities
+            if card.modalities:
+                for item in card.modalities:
+                    if item.status == "observed" and item.value.strip():
+                        card_modalities[pid].append(item.value.strip())
+                        cards_with_modalities.add(pid)
+
+            # Metrics (distinct from evaluation conditions!)
             if card.metrics:
-                card_conditions[pid].extend(card.metrics)
+                for m in card.metrics:
+                    if m.strip():
+                        card_metrics[pid].append(m.strip())
+                        cards_with_metrics.add(pid)
 
-        # Count frequencies across independent papers
+            # Evaluation Conditions (distinct from metrics!)
+            if card.evaluation_conditions:
+                for item in card.evaluation_conditions:
+                    if item.status == "observed" and item.value.strip():
+                        card_conditions[pid].append(item.value.strip())
+                        cards_with_conditions.add(pid)
+
+        # Count method frequencies across independent papers
         method_counts: dict[str, set[str]] = defaultdict(set)
         for pid, methods in card_methods.items():
             for m in methods:
@@ -65,16 +105,24 @@ class CoverageGapMiner:
                 if len(clean_m) >= 2:
                     method_counts[clean_m].add(pid)
 
-        dimension_types = [
-            ("dataset", card_datasets),
-            ("task", card_tasks),
-            ("evaluation condition", card_conditions),
+        dimension_configs = [
+            ("task", card_tasks, cards_with_tasks),
+            ("dataset", card_datasets, cards_with_datasets),
+            ("modality", card_modalities, cards_with_modalities),
+            ("metric", card_metrics, cards_with_metrics),
+            ("evaluation condition", card_conditions, cards_with_conditions),
         ]
 
         candidates: list[CandidateGap] = []
         now = _utc_now()
 
-        for dim_label, card_dim_map in dimension_types:
+        for dim_label, card_dim_map, cards_with_dim in dimension_configs:
+            # Check extraction coverage threshold (>= 50% of cards must have extracted values)
+            extraction_coverage = len(cards_with_dim) / max(1, total_cards_count)
+            if extraction_coverage < 0.5:
+                # Insufficient extraction coverage for this dimension in scoped corpus
+                continue
+
             dim_counts: dict[str, set[str]] = defaultdict(set)
             for pid, items in card_dim_map.items():
                 for item in items:
@@ -91,12 +139,13 @@ class CoverageGapMiner:
                     if len(d_pids) < 2:
                         continue
 
-                    # Check joint occurrence in scoped corpus
+                    # Check joint occurrence of observed evidence in scoped corpus
                     joint_pids = m_pids & d_pids
                     if len(joint_pids) > 0:
-                        # Observed evidence exists
+                        # Observed evidence exists!
                         continue
 
+                    # Zero observed evidence WITH sufficient extraction coverage
                     gap_id = generate_gap_id(
                         "coverage", topic, f"{_slug(method)}-{_slug(dim_item)}"
                     )
@@ -144,7 +193,7 @@ class CoverageGapMiner:
                         retrievals=[],
                         corpus_paper_ids=list(corpus.corpus_paper_ids),
                         corpus_description=(
-                            f"Coverage matrix for '{topic}' over {len(corpus.cards)} PaperCards"
+                            f"Coverage matrix for '{topic}' over {total_cards_count} PaperCards"
                         ),
                         supporting_evidence=supporting_evidence,
                         conflicting_evidence=[],
@@ -158,7 +207,7 @@ class CoverageGapMiner:
                         ),
                         (
                             f"Analysis is bounded by the retrieved corpus of "
-                            f"{len(corpus.corpus_paper_ids)} stored papers."
+                            f"{total_cards_count} stored papers."
                         ),
                     ]
 
@@ -177,7 +226,7 @@ class CoverageGapMiner:
                             importance_score=None,
                             feasibility_score=None,
                             confidence=0.4,
-                            search_scope=f"Coverage Matrix over {len(corpus.cards)} PaperCards",
+                            search_scope=f"Coverage Matrix over {total_cards_count} PaperCards",
                             caveats=caveats,
                             provenance=provenance,
                             review_status="candidate",
