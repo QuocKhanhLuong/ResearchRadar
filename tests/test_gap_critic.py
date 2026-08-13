@@ -179,3 +179,75 @@ async def test_metadata_overlap_only_downgrades_never_rejects() -> None:
 
     assert review.decision == "downgraded"
     assert review.decision != "rejected"
+
+
+@pytest.mark.asyncio
+async def test_critic_downgrades_when_keywords_match_but_task_is_mismatched() -> None:
+    now = _utc_now()
+    # Candidate gap is about segmentation task
+    cand = CandidateGap(
+        id="gap-seg",
+        title="Scanner domain shift in segmentation",
+        description="Description",
+        research_question="How to handle scanner domain shift in image segmentation?",
+        supporting_papers=["p1"],
+        evidence_count=1,
+        search_scope="1 card",
+        provenance=GapProvenance(retrievals=[], corpus_paper_ids=["p1"], corpus_description="s"),
+        review_status="candidate",
+        created_at=now,
+    )
+
+    # Memory card resolves scanner domain shift, but for reconstruction task!
+    diff_task_card = StoredPaperCard(
+        card=PaperCard(
+            paper_id="p-recon",
+            problem="Image Reconstruction",
+            contributions=["We resolve scanner domain shift for image reconstruction."],
+        ),
+        source_url=None,
+        document_sha256=None,
+        selected_sections=(),
+        llm_provider=None,
+        llm_model=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    fake_scout = FakeScout(return_papers=[])
+    critic = CriticService(fake_scout)
+
+    review, updated = await critic.review_candidate(cand, memory_cards=(diff_task_card,))
+
+    # Different task context must NOT reject!
+    assert review.decision != "rejected"
+    assert updated.review_status != "rejected"
+
+
+@pytest.mark.asyncio
+async def test_critic_stores_invalidating_evidence_ref_on_rejection() -> None:
+    now = _utc_now()
+    cand = _make_candidate(now)
+
+    resolving_card = StoredPaperCard(
+        card=PaperCard(
+            paper_id="p-res",
+            contributions=["We propose scanner domain shift adaptation for MRI."],
+        ),
+        source_url=None,
+        document_sha256=None,
+        selected_sections=(),
+        llm_provider=None,
+        llm_model=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    fake_scout = FakeScout(return_papers=[])
+    critic = CriticService(fake_scout)
+
+    review, updated = await critic.review_candidate(cand, memory_cards=(resolving_card,))
+
+    assert review.decision == "rejected"
+    assert len(updated.provenance.conflicting_evidence) == 1
+    assert updated.provenance.conflicting_evidence[0].paper_id == "p-res"

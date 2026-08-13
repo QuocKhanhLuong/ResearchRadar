@@ -1,7 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from research_radar.models import EvidenceClaim, Paper, PaperCard, PaperDocument
+from research_radar.models import (
+    EvidenceClaim,
+    Paper,
+    PaperCard,
+    PaperDocument,
+    StructuredEvidence,
+)
 
 
 def test_paper_normalizes_authors_ids_and_canonical_link() -> None:
@@ -42,3 +48,21 @@ def test_evidence_claim_accepts_unknown_evidence_location() -> None:
     )
 
     assert card.main_claims[0].source_section is None
+
+
+def test_structured_evidence_distinguishes_observed_absent_unknown() -> None:
+    ev_obs = StructuredEvidence(value="MRI", status="observed")
+    ev_abs = StructuredEvidence(value="domain shift", status="explicitly_absent")
+    ev_unk = StructuredEvidence(value="calibration", status="unknown")
+
+    assert ev_obs.status == "observed"
+    assert ev_abs.status == "explicitly_absent"
+    assert ev_unk.status == "unknown"
+
+
+def test_paper_card_structured_evidence_fields_default_to_empty_list() -> None:
+    card = PaperCard(paper_id="legacy-1")
+
+    assert card.tasks == []
+    assert card.modalities == []
+    assert card.evaluation_conditions == []

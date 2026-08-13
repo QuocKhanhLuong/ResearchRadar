@@ -218,3 +218,109 @@ async def test_gap_service_supports_coverage_type(tmp_path_factory: object) -> N
     assert res.candidates[0].gap_type == "coverage"
 
     db.dispose()
+
+
+def test_coverage_gap_distinguishes_metrics_from_evaluation_conditions() -> None:
+    now = _utc_now()
+    p1 = StoredPaper(
+        id="p1", canonical_key="k1", title="Paper 1", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+    p2 = StoredPaper(
+        id="p2", canonical_key="k2", title="Paper 2", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+    p3 = StoredPaper(
+        id="p3", canonical_key="k3", title="Paper 3", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+    p4 = StoredPaper(
+        id="p4", canonical_key="k4", title="Paper 4", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+
+    card1 = StoredPaperCard(
+        card=PaperCard(paper_id="p1", methods=["MethodA"], metrics=["PSNR"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+    card2 = StoredPaperCard(
+        card=PaperCard(paper_id="p2", methods=["MethodA"], metrics=["PSNR"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+    card3 = StoredPaperCard(
+        card=PaperCard(paper_id="p3", methods=["MethodB"], metrics=["SSIM"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+    card4 = StoredPaperCard(
+        card=PaperCard(paper_id="p4", methods=["MethodB"], metrics=["SSIM"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+
+    corpus = ScopedCorpusResult(
+        cards=(card1, card2, card3, card4),
+        papers=(p1, p2, p3, p4),
+        corpus_paper_ids=("p1", "p2", "p3", "p4"),
+        missing_cards_paper_ids=(),
+        total_matching_papers=4,
+    )
+    miner = CoverageGapMiner()
+    candidates = miner.mine_coverage_gaps("Denoising", corpus)
+
+    metric_cands = [c for c in candidates if "metric" in c.description.lower()]
+    assert len(metric_cands) >= 1
+    assert "evaluation condition" not in metric_cands[0].title.lower()
+
+
+def test_coverage_gap_insufficient_extraction_returns_no_candidates() -> None:
+    now = _utc_now()
+    p1 = StoredPaper(
+        id="p1", canonical_key="k1", title="P1", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+    p2 = StoredPaper(
+        id="p2", canonical_key="k2", title="P2", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+    p3 = StoredPaper(
+        id="p3", canonical_key="k3", title="P3", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+
+    c1 = StoredPaperCard(
+        card=PaperCard(paper_id="p1", methods=["MethodA"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+    c2 = StoredPaperCard(
+        card=PaperCard(paper_id="p2", methods=["MethodA"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+    c3 = StoredPaperCard(
+        card=PaperCard(paper_id="p3", methods=["MethodB"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+
+    corpus = ScopedCorpusResult(
+        cards=(c1, c2, c3),
+        papers=(p1, p2, p3),
+        corpus_paper_ids=("p1", "p2", "p3"),
+        missing_cards_paper_ids=(),
+        total_matching_papers=3,
+    )
+    miner = CoverageGapMiner()
+    candidates = miner.mine_coverage_gaps("Segmentation", corpus)
+
+    assert len(candidates) == 0
