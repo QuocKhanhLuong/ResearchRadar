@@ -12,8 +12,10 @@ from collections.abc import Awaitable, Callable, Iterable
 import discord
 from discord import app_commands
 
+from research_radar.bot.commands.paper import register_paper_command
 from research_radar.bot.commands.ping import register_ping_command
 from research_radar.config import Settings
+from research_radar.research.service import ResearchService
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ class ResearchRadarBot(discord.Client):
         settings: Settings,
         *,
         shutdown_hooks: Iterable[ShutdownHook] = (),
+        research_service: ResearchService | None = None,
     ) -> None:
         super().__init__(intents=_application_intents())
         self.settings = settings
@@ -36,6 +39,8 @@ class ResearchRadarBot(discord.Client):
         self._owned_resources_closed = False
 
         register_ping_command(self.tree)
+        if research_service is not None:
+            register_paper_command(self.tree, research_service)
 
     async def setup_hook(self) -> None:
         """Synchronize slash commands before connecting to the gateway."""
@@ -99,20 +104,30 @@ def create_bot(
     settings: Settings,
     *,
     shutdown_hooks: Iterable[ShutdownHook] = (),
+    research_service: ResearchService | None = None,
 ) -> ResearchRadarBot:
     """Construct a bot without requiring a token or a live Discord connection."""
 
-    return ResearchRadarBot(settings, shutdown_hooks=shutdown_hooks)
+    return ResearchRadarBot(
+        settings,
+        shutdown_hooks=shutdown_hooks,
+        research_service=research_service,
+    )
 
 
 def run_bot(
     settings: Settings,
     *,
     shutdown_hooks: Iterable[ShutdownHook] = (),
+    research_service: ResearchService | None = None,
 ) -> None:
     """Launch the Discord client after explicitly validating its required token."""
 
-    bot = create_bot(settings, shutdown_hooks=shutdown_hooks)
+    bot = create_bot(
+        settings,
+        shutdown_hooks=shutdown_hooks,
+        research_service=research_service,
+    )
     bot.run(settings.require_discord_token(), log_handler=None)
 
 
