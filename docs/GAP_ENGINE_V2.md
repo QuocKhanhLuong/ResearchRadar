@@ -2,9 +2,9 @@
 
 ## Status and boundary
 
-**V2A Explicit Gap Mining** is implemented. It provides evidence-backed explicit gap mining, SQLite gap/review persistence, deterministic scoped corpus selection, bounded Critic re-search verification, and Discord `/gap` / `/gap-show` commands.
+**V2A Explicit Gap Mining**, **V2B Coverage Gap Mining**, and **V2C Evaluation Gap Mining** are implemented. The engine provides evidence-backed explicit, coverage, and evaluation gap mining, deterministic gap lineage preservation, SQLite candidate/review persistence, bounded Critic re-search verification, and Discord `/gap topic:<...> [type:explicit|coverage|evaluation]` / `/gap-show` commands.
 
-Coverage matrix, contradiction detection, evaluation gap mining, and method transfer remain future V2 roadmap items. The engine runs as normal Python services within the existing single process and SQLite database. It does not use a multi-agent framework, vector database, worker queue, microservice, or new user model.
+Contradiction detection and method transfer remain future roadmap items. The engine runs as normal Python services within the existing single process and SQLite database without vector databases, Celery, or multi-agent frameworks.
 
 ## Preconditions before implementation
 
