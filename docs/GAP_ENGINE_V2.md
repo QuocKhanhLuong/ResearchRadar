@@ -2,15 +2,9 @@
 
 ## Status and boundary
 
-This is a **future V2 design**, not an implemented ResearchRadar feature. V1
-must remain a single-process, SQLite-backed research-ingestion and evidence
-memory system. A gap engine is only useful once that foundation has reliable,
-inspectable inputs; it must never be approximated by a generic LLM prompt such
-as “find research gaps in these papers.”
+**V2A Explicit Gap Mining** is implemented. It provides evidence-backed explicit gap mining, SQLite gap/review persistence, deterministic scoped corpus selection, bounded Critic re-search verification, and Discord `/gap` / `/gap-show` commands.
 
-The V2 engine remains normal Python services called from the existing
-application composition root. It does not require a multi-agent framework,
-vector database, worker queue, microservice, or new user/tenant model.
+Coverage matrix, contradiction detection, evaluation gap mining, and method transfer remain future V2 roadmap items. The engine runs as normal Python services within the existing single process and SQLite database. It does not use a multi-agent framework, vector database, worker queue, microservice, or new user model.
 
 ## Preconditions before implementation
 

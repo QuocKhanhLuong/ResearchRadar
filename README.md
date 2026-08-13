@@ -134,6 +134,8 @@ Message Content Intent.
 | `/watch remove topic:<name-or-id>` | Removes a monitoring topic. |
 | `/read url:<direct-pdf-url>` | Downloads, extracts, and—when a remote LLM is configured—analyzes a direct public PDF. |
 | `/digest` | Renders a recent digest from stored discoveries only; it does not run a new provider search. |
+| `/gap topic:<text> [count]` | Mines candidate research gaps from attributable PaperCards and validates them with a bounded Critic re-search loop. |
+| `/gap-show id:<candidate-id>` | Displays candidate gap details, evidence statements, search scope, caveats, and Critic audit history. |
 
 ### `/read` limitation and LLM behavior
 
