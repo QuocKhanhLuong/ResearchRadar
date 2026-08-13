@@ -26,6 +26,7 @@ from research_radar.reader.reader import (
     select_useful_sections,
     validate_card_evidence,
 )
+from research_radar.reader.service import ReaderService, ReadResult
 
 __all__ = [
     "DEFAULT_MAX_LLM_INPUT_CHARS",
@@ -41,6 +42,8 @@ __all__ = [
     "PDFParser",
     "PaperParser",
     "PaperDownloadError",
+    "ReadResult",
+    "ReaderService",
     "canonical_section_name",
     "detect_sections",
     "fetch_pdf",

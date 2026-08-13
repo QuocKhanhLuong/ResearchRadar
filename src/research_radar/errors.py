@@ -23,3 +23,7 @@ class PaperParseError(ResearchRadarError):
 
 class LLMUnavailableError(ResearchRadarError):
     """Raised when configured model inference is unavailable."""
+
+
+class LLMResponseError(ResearchRadarError):
+    """Raised when a reachable model returns invalid structured data."""

@@ -6,8 +6,6 @@ from typing import Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from research_radar.errors import ResearchRadarError
-
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
@@ -34,7 +32,3 @@ class LLMProvider(Protocol):
         response_model: type[ModelT],
     ) -> ModelT:
         """Generate and validate one structured result."""
-
-
-class LLMResponseError(ResearchRadarError):
-    """Raised when a reachable model endpoint returns unusable structured data."""
