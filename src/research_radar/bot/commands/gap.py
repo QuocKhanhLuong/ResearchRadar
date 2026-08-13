@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+from typing import Literal, Protocol
 
 import discord
 from discord import app_commands
@@ -20,7 +20,12 @@ _NO_MENTIONS = discord.AllowedMentions.none()
 class GapCommandService(Protocol):
     """The narrow gap-service surface required by Discord handlers."""
 
-    async def analyze_gaps(self, topic: str, count: int = 1) -> GapAnalysisResult: ...
+    async def analyze_gaps(
+        self,
+        topic: str,
+        count: int = 1,
+        gap_type: Literal["explicit", "coverage", "evaluation"] = "explicit",
+    ) -> GapAnalysisResult: ...
 
     def get_candidate_detail(
         self, candidate_id: str
@@ -38,8 +43,9 @@ def render_gap_embed(candidate: CandidateGap, review: CriticReview | None = None
     }
     color = status_colors.get(candidate.review_status, discord.Color.blue())
 
+    type_title = candidate.gap_type.upper()
     embed = discord.Embed(
-        title="🔬 Candidate Research Gap",
+        title=f"🔬 Candidate Research Gap [{type_title}]",
         description=f"**Title**: {candidate.title}",
         color=color,
     )
@@ -115,11 +121,14 @@ def register_gap_commands(
     """Register ``/gap`` and ``/gap-show`` slash commands."""
 
     async def gap_cmd(
-        interaction: discord.Interaction, topic: str, count: int = 1
+        interaction: discord.Interaction,
+        topic: str,
+        count: int = 1,
+        type: Literal["explicit", "coverage", "evaluation"] = "explicit",
     ) -> None:
         await interaction.response.defer(thinking=True)
         try:
-            result = await gap_service.analyze_gaps(topic, count=count)
+            result = await gap_service.analyze_gaps(topic, count=count, gap_type=type)
             if result.is_insufficient_evidence:
                 msg = result.message or "Insufficient evidence."
                 await interaction.edit_original_response(
