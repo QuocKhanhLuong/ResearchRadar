@@ -8,18 +8,45 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable
+from typing import Protocol
 
 import discord
 from discord import app_commands
 
+from research_radar.bot.commands.digest import register_digest_command
 from research_radar.bot.commands.paper import register_paper_command
 from research_radar.bot.commands.ping import register_ping_command
+from research_radar.bot.commands.read import register_read_command
+from research_radar.bot.commands.watch import register_watch_commands
 from research_radar.config import Settings
 from research_radar.research.service import ResearchService
 
 logger = logging.getLogger(__name__)
 
 ShutdownHook = Callable[[], Awaitable[None]]
+StartupHook = Callable[[], Awaitable[None]]
+
+
+class WatchCommandRegistrationService(Protocol):
+    """Minimum async surface required to register the Discord watch commands."""
+
+    async def add_topic(self, name: str, query: str) -> object: ...
+
+    async def list_topics(self) -> list[object]: ...
+
+    async def remove_topic(self, topic_id_or_name: str) -> bool: ...
+
+
+class ReaderCommandRegistrationService(Protocol):
+    """Minimum async surface required to register the Discord reader command."""
+
+    async def read_url(self, url: str) -> object: ...
+
+
+class DigestCommandRegistrationService(Protocol):
+    """Minimum async surface required to register the Discord digest command."""
+
+    async def build_on_demand(self) -> object: ...
 
 
 class ResearchRadarBot(discord.Client):
@@ -29,23 +56,36 @@ class ResearchRadarBot(discord.Client):
         self,
         settings: Settings,
         *,
+        startup_hooks: Iterable[StartupHook] = (),
         shutdown_hooks: Iterable[ShutdownHook] = (),
         research_service: ResearchService | None = None,
+        watch_service: WatchCommandRegistrationService | None = None,
+        reader_service: ReaderCommandRegistrationService | None = None,
+        digest_service: DigestCommandRegistrationService | None = None,
     ) -> None:
         super().__init__(intents=_application_intents())
         self.settings = settings
         self.tree = app_commands.CommandTree(self)
+        self._startup_hooks = list(startup_hooks)
         self._shutdown_hooks = list(shutdown_hooks)
         self._owned_resources_closed = False
 
         register_ping_command(self.tree)
         if research_service is not None:
             register_paper_command(self.tree, research_service)
+        if watch_service is not None:
+            register_watch_commands(self.tree, watch_service)
+        if reader_service is not None:
+            register_read_command(self.tree, reader_service)
+        if digest_service is not None:
+            register_digest_command(self.tree, digest_service)
 
     async def setup_hook(self) -> None:
         """Synchronize slash commands before connecting to the gateway."""
 
         await self.sync_application_commands()
+        for hook in self._startup_hooks:
+            await hook()
 
     async def sync_application_commands(self) -> list[app_commands.AppCommand]:
         """Sync commands globally or to the configured development guild."""
@@ -103,30 +143,46 @@ class ResearchRadarBot(discord.Client):
 def create_bot(
     settings: Settings,
     *,
+    startup_hooks: Iterable[StartupHook] = (),
     shutdown_hooks: Iterable[ShutdownHook] = (),
     research_service: ResearchService | None = None,
+    watch_service: WatchCommandRegistrationService | None = None,
+    reader_service: ReaderCommandRegistrationService | None = None,
+    digest_service: DigestCommandRegistrationService | None = None,
 ) -> ResearchRadarBot:
     """Construct a bot without requiring a token or a live Discord connection."""
 
     return ResearchRadarBot(
         settings,
+        startup_hooks=startup_hooks,
         shutdown_hooks=shutdown_hooks,
         research_service=research_service,
+        watch_service=watch_service,
+        reader_service=reader_service,
+        digest_service=digest_service,
     )
 
 
 def run_bot(
     settings: Settings,
     *,
+    startup_hooks: Iterable[StartupHook] = (),
     shutdown_hooks: Iterable[ShutdownHook] = (),
     research_service: ResearchService | None = None,
+    watch_service: WatchCommandRegistrationService | None = None,
+    reader_service: ReaderCommandRegistrationService | None = None,
+    digest_service: DigestCommandRegistrationService | None = None,
 ) -> None:
     """Launch the Discord client after explicitly validating its required token."""
 
     bot = create_bot(
         settings,
+        startup_hooks=startup_hooks,
         shutdown_hooks=shutdown_hooks,
         research_service=research_service,
+        watch_service=watch_service,
+        reader_service=reader_service,
+        digest_service=digest_service,
     )
     bot.run(settings.require_discord_token(), log_handler=None)
 

@@ -108,6 +108,27 @@ async def test_shutdown_hooks_are_run_once_in_reverse_registration_order() -> No
 
 
 @pytest.mark.asyncio
+async def test_setup_hook_syncs_commands_before_starting_application_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def start_resource() -> None:
+        calls.append("start")
+
+    bot = create_bot(Settings(), startup_hooks=(start_resource,))
+    sync = AsyncMock(side_effect=lambda: calls.append("sync") or [])
+    monkeypatch.setattr(bot, "sync_application_commands", sync)
+    try:
+        await bot.setup_hook()
+
+        assert calls == ["sync", "start"]
+        sync.assert_awaited_once_with()
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_paper_command_is_registered_only_when_a_service_is_provided() -> None:
     class _ResearchService:
         async def search(self, query: str, limit: int) -> SearchResult:
@@ -116,6 +137,49 @@ async def test_paper_command_is_registered_only_when_a_service_is_provided() -> 
     bot = create_bot(Settings(), research_service=_ResearchService())  # type: ignore[arg-type]
     try:
         assert [command.name for command in bot.tree.get_commands()] == ["ping", "paper"]
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_bot_registers_all_optional_service_command_adapters() -> None:
+    class _ResearchService:
+        async def search(self, query: str, limit: int) -> SearchResult:
+            return SearchResult(papers=[])
+
+    class _WatchService:
+        async def add_topic(self, name: str, query: str) -> object:
+            return object()
+
+        async def list_topics(self) -> list[object]:
+            return []
+
+        async def remove_topic(self, topic_id_or_name: str) -> bool:
+            return False
+
+    class _ReaderService:
+        async def read_url(self, url: str) -> object:
+            return object()
+
+    class _DigestService:
+        async def build_on_demand(self) -> object:
+            return object()
+
+    bot = create_bot(
+        Settings(),
+        research_service=_ResearchService(),  # type: ignore[arg-type]
+        watch_service=_WatchService(),
+        reader_service=_ReaderService(),
+        digest_service=_DigestService(),
+    )
+    try:
+        assert [command.name for command in bot.tree.get_commands()] == [
+            "ping",
+            "paper",
+            "watch",
+            "read",
+            "digest",
+        ]
     finally:
         await bot.close()
 
