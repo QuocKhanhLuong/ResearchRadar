@@ -10,6 +10,7 @@ from research_radar.errors import ProviderUnavailableError
 from research_radar.models.gap import CandidateGap, CriticReview, RetrievalRecord
 from research_radar.models.paper import Paper
 from research_radar.research.scout import ScoutResult
+from research_radar.storage.repositories import StoredPaperCard
 
 
 class ScoutSearchProtocol(Protocol):
@@ -71,7 +72,11 @@ class CriticService:
         return deduped[:4]
 
     async def review_candidate(
-        self, candidate: CandidateGap, review_version: int = 1
+        self,
+        candidate: CandidateGap,
+        review_version: int = 1,
+        *,
+        memory_cards: tuple[StoredPaperCard, ...] = (),
     ) -> tuple[CriticReview, CandidateGap]:
         """Execute fresh bounded searches, evaluate overlap, and record audit rationale."""
 
@@ -143,12 +148,37 @@ class CriticService:
 
         overlapping_paper_ids = list(dict.fromkeys(overlapping_paper_ids))
 
+        # Check for grounded rejection from structured PaperCard evidence in memory
+        invalidating_paper_id: str | None = None
+        for stored_card in memory_cards:
+            if stored_card.card.paper_id in candidate.supporting_papers:
+                continue
+            card = stored_card.card
+            structured_text = " ".join(
+                card.contributions
+                + card.methods
+                + [c.claim for c in card.main_claims]
+            ).lower()
+            card_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", structured_text))
+            if len(candidate_keywords & card_words) >= 3:
+                invalidating_paper_id = card.paper_id
+                break
+
         # Decision matrix
         decision: str
         rationale: str
         critic_caveats: list[str] = []
 
-        if all_failed:
+        if invalidating_paper_id:
+            decision = "rejected"
+            rationale = (
+                f"Ground evidence in stored PaperCard for paper '{invalidating_paper_id}' "
+                f"directly addresses or resolves this candidate research question."
+            )
+            critic_caveats.append(
+                f"Resolved by ground evidence in analyzed paper '{invalidating_paper_id}'."
+            )
+        elif all_failed:
             decision = "downgraded"
             rationale = (
                 "Verification incomplete: all scholarly providers were unavailable during Critic."

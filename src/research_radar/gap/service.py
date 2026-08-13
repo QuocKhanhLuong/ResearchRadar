@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 from research_radar.gap.corpus import ScopedCorpusService
+from research_radar.gap.coverage import CoverageGapMiner
 from research_radar.gap.critic import CriticService, ScoutSearchProtocol
+from research_radar.gap.evaluation import EvaluationGapMiner
 from research_radar.gap.miner import ExplicitGapMiner
 from research_radar.models.gap import CandidateGap, CriticReview
 from research_radar.storage.repositories import ScopedCorpusResult
@@ -44,7 +46,7 @@ class GapAnalysisResult:
 
 
 class GapService:
-    """Orchestrate scoped corpus selection, explicit gap mining, and Critic review."""
+    """Orchestrate scoped corpus selection, gap mining, and Critic review."""
 
     def __init__(
         self,
@@ -52,17 +54,27 @@ class GapService:
         scout: ScoutSearchProtocol,
         *,
         corpus_service: ScopedCorpusService | None = None,
+        explicit_miner: ExplicitGapMiner | None = None,
         miner: ExplicitGapMiner | None = None,
+        coverage_miner: CoverageGapMiner | None = None,
+        evaluation_miner: EvaluationGapMiner | None = None,
         critic: CriticService | None = None,
     ) -> None:
         self._repository = repository
         self._scout = scout
         self._corpus_service = corpus_service or ScopedCorpusService(repository)
-        self._miner = miner or ExplicitGapMiner()
+        self._explicit_miner = explicit_miner or miner or ExplicitGapMiner()
+        self._coverage_miner = coverage_miner or CoverageGapMiner()
+        self._evaluation_miner = evaluation_miner or EvaluationGapMiner()
         self._critic = critic or CriticService(scout)
 
-    async def analyze_gaps(self, topic: str, count: int = 1) -> GapAnalysisResult:
-        """Run the end-to-end V2A explicit gap pipeline."""
+    async def analyze_gaps(
+        self,
+        topic: str,
+        count: int = 1,
+        gap_type: Literal["explicit", "coverage", "evaluation"] = "explicit",
+    ) -> GapAnalysisResult:
+        """Run the end-to-end gap pipeline for the requested gap type."""
 
         clean_topic = " ".join(topic.split())
         if not clean_topic:
@@ -98,13 +110,18 @@ class GapService:
                 unanalyzed_papers_count=unanalyzed_papers_count,
             )
 
-        mined_candidates = self._miner.mine_gaps(clean_topic, corpus)
+        if gap_type == "coverage":
+            mined_candidates = self._coverage_miner.mine_coverage_gaps(clean_topic, corpus)
+        elif gap_type == "evaluation":
+            mined_candidates = self._evaluation_miner.mine_evaluation_gaps(clean_topic, corpus)
+        else:
+            mined_candidates = self._explicit_miner.mine_gaps(clean_topic, corpus)
 
         if not mined_candidates:
             msg = (
                 f"Insufficient repeated gap signals.\n\n"
-                f"No explicit limitation was found across at least 2 independent papers "
-                f"in the scoped corpus for '{clean_topic}'."
+                f"No {gap_type} gap candidate was found across the scoped corpus "
+                f"for '{clean_topic}'."
             )
             return GapAnalysisResult(
                 candidates=[],
@@ -120,12 +137,15 @@ class GapService:
         final_candidates: list[CandidateGap] = []
         final_reviews: list[CriticReview] = []
 
-        for candidate in selected_candidates:
-            existing_reviews = self._repository.list_critic_reviews(candidate.id)
+        for mined_candidate in selected_candidates:
+            existing_cand = self._repository.get_candidate(mined_candidate.id)
+            target_candidate = existing_cand if existing_cand is not None else mined_candidate
+
+            existing_reviews = self._repository.list_critic_reviews(target_candidate.id)
             next_version = len(existing_reviews) + 1
 
             review, updated_candidate = await self._critic.review_candidate(
-                candidate, review_version=next_version
+                target_candidate, review_version=next_version, memory_cards=corpus.cards
             )
 
             self._repository.save_candidate(updated_candidate)

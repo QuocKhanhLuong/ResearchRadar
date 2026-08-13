@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from research_radar.models.gap import (
     CandidateGap,
@@ -76,6 +76,39 @@ def enforce_language_safety(text: str) -> str:
         pattern = re.compile(re.escape(phrase), re.IGNORECASE)
         result = pattern.sub("limited evidence was found for", result)
     return result
+
+
+def generate_gap_id(gap_type: str, topic: str, theme_phrase: str) -> str:
+    """Generate a deterministic fingerprint ID for gap lineage preservation."""
+
+    topic_slug = re.sub(r"[^a-z0-9]+", "-", topic.strip().lower()).strip("-")[:24] or "topic"
+    phrase_slug = re.sub(r"[^a-z0-9]+", "-", theme_phrase.strip().lower()).strip("-")[:24] or "gap"
+    raw_sig = f"{gap_type}:{topic_slug}:{phrase_slug}"
+    sig_hash = hashlib.sha256(raw_sig.encode()).hexdigest()[:8]
+    return f"gap-{gap_type}-{topic_slug}-{sig_hash}"
+
+
+def extract_theme_phrase(group: list[EvidenceRef]) -> str:
+    """Extract a representative natural phrase from evidence statements."""
+
+    if not group:
+        return "observed limitation"
+    shared_tokens: set[str] | None = None
+    for ref in group:
+        ref_tokens = _tokenize(ref.supporting_text or "")
+        if shared_tokens is None:
+            shared_tokens = set(ref_tokens)
+        else:
+            shared_tokens &= ref_tokens
+
+    first_text = group[0].supporting_text or ""
+    words = re.findall(r"\b[a-zA-Z0-9-]+\b", first_text)
+    if shared_tokens:
+        phrase_words = [w for w in words if w.lower() in shared_tokens]
+        if phrase_words:
+            return " ".join(phrase_words[:5])
+
+    return " ".join(words[:5]) if words else "observed limitation"
 
 
 class ExplicitGapMiner:
@@ -180,12 +213,9 @@ class ExplicitGapMiner:
                 # 1 paper: weak lead only, do not surface as candidate gap in V2A
                 continue
 
-            # Key terms for candidate generation
-            combined_tokens: set[str] = set()
-            for ref in group:
-                combined_tokens.update(_tokenize(ref.supporting_text or ""))
-            top_terms = sorted(combined_tokens)[:4]
-            theme_summary = " ".join(top_terms) if top_terms else "observed limitation"
+            # Natural phrase extraction and deterministic gap ID
+            theme_summary = extract_theme_phrase(group)
+            gap_id = generate_gap_id("explicit", topic, theme_summary)
 
             evidence_count = len(group)
             evidence_score = min(1.0, round(0.4 + 0.15 * len(paper_ids) + 0.05 * evidence_count, 2))
@@ -231,7 +261,7 @@ class ExplicitGapMiner:
 
             candidates.append(
                 CandidateGap(
-                    id=str(uuid4()),
+                    id=gap_id,
                     title=title,
                     description=description,
                     gap_type="explicit",

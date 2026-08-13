@@ -10,7 +10,9 @@ from research_radar.errors import ProviderUnavailableError
 from research_radar.gap.critic import CriticService
 from research_radar.models.gap import CandidateGap, GapProvenance
 from research_radar.models.paper import Paper
+from research_radar.models.paper_card import PaperCard
 from research_radar.research.scout import ScoutResult
+from research_radar.storage.repositories import StoredPaperCard
 
 
 def _utc_now() -> datetime:
@@ -32,7 +34,7 @@ class FakeScout:
     async def search(self, query: str, limit: int) -> ScoutResult:
         self.queries_received.append(query)
         if self.fail:
-            raise ProviderUnavailableError("Semantic Scholar unavailable")
+            raise ProviderUnavailableError("All scholarly providers failed")
         counts = {"fake_provider": len(self.return_papers)} if self.return_papers else {}
         return ScoutResult(
             papers=self.return_papers, warnings=self.warnings, provider_counts=counts
@@ -109,3 +111,71 @@ async def test_critic_handles_partial_provider_failure() -> None:
 
     assert review.decision == "downgraded"
     assert "Semantic Scholar was unavailable" in updated.caveats
+
+
+@pytest.mark.asyncio
+async def test_critic_rejects_when_memory_paper_card_resolves_gap() -> None:
+    now = _utc_now()
+    cand = _make_candidate(now)
+
+    # Paper p3 is in memory and explicitly resolves scanner domain shift in MRI
+    resolving_card = StoredPaperCard(
+        card=PaperCard(
+            paper_id="p3",
+            contributions=["We propose domain adaptation for scanner domain shift in MRI."],
+        ),
+        source_url=None,
+        document_sha256=None,
+        selected_sections=(),
+        llm_provider=None,
+        llm_model=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    fake_scout = FakeScout(return_papers=[])
+    critic = CriticService(fake_scout)
+
+    review, updated = await critic.review_candidate(
+        cand, memory_cards=(resolving_card,)
+    )
+
+    assert review.decision == "rejected"
+    assert updated.review_status == "rejected"
+    assert "p3" in review.rationale
+
+
+@pytest.mark.asyncio
+async def test_critic_downgrades_when_all_providers_fail() -> None:
+    now = _utc_now()
+    cand = _make_candidate(now)
+
+    fake_scout = FakeScout(fail=True)
+    critic = CriticService(fake_scout)
+
+    review, updated = await critic.review_candidate(cand)
+
+    assert review.decision == "downgraded"
+    assert updated.review_status == "downgraded"
+    assert "all scholarly providers were unavailable" in review.rationale.lower()
+
+
+@pytest.mark.asyncio
+async def test_metadata_overlap_only_downgrades_never_rejects() -> None:
+    now = _utc_now()
+    cand = _make_candidate(now)
+
+    fresh_paper = Paper(
+        id="fresh-title-match",
+        title="Scanner Domain Shift in MRI Reconstruction Survey",
+        abstract="A survey of scanner domain shift in MRI.",
+        source="openalex",
+    )
+
+    fake_scout = FakeScout(return_papers=[fresh_paper])
+    critic = CriticService(fake_scout)
+
+    review, updated = await critic.review_candidate(cand)
+
+    assert review.decision == "downgraded"
+    assert review.decision != "rejected"
