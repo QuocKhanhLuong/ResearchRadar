@@ -119,9 +119,11 @@ def _analysis_messages(
             role="system",
             content=(
                 "Extract a PaperCard from the supplied paper sections. Return only a JSON object "
-                "matching the PaperCard schema. Do not invent evidence: use null source_section "
-                "and supporting_text when unknown. source_section must be one of the supplied "
-                "labels."
+                "matching the PaperCard schema. Include structured tasks, modalities, and "
+                "evaluation_conditions with status 'observed', 'explicitly_absent', or 'unknown'. "
+                "Default to 'unknown' if not explicitly stated in text. Do not invent evidence: "
+                "use null source_section and supporting_text when unknown. source_section must be "
+                "one of the supplied labels."
             ),
         ),
         LLMMessage(
