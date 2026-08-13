@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from research_radar.errors import ProviderUnavailableError
-from research_radar.models.gap import CandidateGap, CriticReview, RetrievalRecord
+from research_radar.models.gap import CandidateGap, CriticReview, EvidenceRef, RetrievalRecord
 from research_radar.models.paper import Paper
+from research_radar.models.paper_card import PaperCard
 from research_radar.research.scout import ScoutResult
 from research_radar.storage.repositories import StoredPaperCard
 
@@ -21,6 +22,76 @@ class ScoutSearchProtocol(Protocol):
 
 def _utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _check_context_compatibility_and_rejection(
+    card: PaperCard, candidate: CandidateGap, paper_title: str
+) -> tuple[bool, EvidenceRef | None]:
+    """Check if a stored PaperCard contains context-compatible evidence resolving candidate."""
+
+    cand_text = f"{candidate.title} {candidate.research_question}".lower()
+    candidate_keywords = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", cand_text))
+
+    # Extract tasks from candidate and card
+    card_tasks = {
+        t.value.lower()
+        for t in card.tasks
+        if t.status == "observed" and t.value.strip()
+    }
+    if card.problem:
+        card_tasks.add(card.problem.lower())
+
+    # Extract modalities from candidate and card
+    card_modalities = {
+        m.value.lower()
+        for m in card.modalities
+        if m.status == "observed" and m.value.strip()
+    }
+
+    # Task compatibility check (e.g. reconstruction vs segmentation vs classification)
+    known_task_terms = {
+        "reconstruction", "segmentation", "classification", "detection", "registration"
+    }
+    cand_task_terms = candidate_keywords & known_task_terms
+    card_text = " ".join(card_tasks)
+    card_task_terms = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", card_text)) & known_task_terms
+    if cand_task_terms and card_task_terms and not (cand_task_terms & card_task_terms):
+        # Task mismatch -> context incompatible!
+        return False, None
+
+    # Modality compatibility check (e.g. mri vs ct vs xray vs ultrasound)
+    known_modality_terms = {"mri", "ct", "xray", "ultrasound", "pet", "spect"}
+    cand_mod_terms = candidate_keywords & known_modality_terms
+    mod_text = " ".join(card_modalities)
+    card_mod_terms = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", mod_text)) & known_modality_terms
+    if cand_mod_terms and card_mod_terms and not (cand_mod_terms & card_mod_terms):
+        # Modality mismatch -> context incompatible!
+        return False, None
+
+    # Check for direct resolution in main_claims, contributions, methods
+    for claim in card.main_claims:
+        claim_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", claim.claim.lower()))
+        if len(candidate_keywords & claim_words) >= 3:
+            return True, EvidenceRef(
+                paper_id=card.paper_id,
+                paper_title=paper_title,
+                evidence_kind="conflicting",
+                claim_or_field="main_claims",
+                supporting_text=claim.claim,
+            )
+
+    for contrib in card.contributions:
+        contrib_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", contrib.lower()))
+        if len(candidate_keywords & contrib_words) >= 3:
+            return True, EvidenceRef(
+                paper_id=card.paper_id,
+                paper_title=paper_title,
+                evidence_kind="conflicting",
+                claim_or_field="contributions",
+                supporting_text=contrib,
+            )
+
+    return False, None
 
 
 class CriticService:
@@ -132,7 +203,7 @@ class CriticService:
             dict.fromkeys(p.id for p in fresh_papers if p.id not in candidate.supporting_papers)
         )
 
-        # Check for potential overlap in fresh literature
+        # Check for potential overlap in fresh literature (metadata overlap => downgrade only!)
         overlapping_paper_ids: list[str] = []
         cand_text = f"{candidate.title} {candidate.research_question}".lower()
         candidate_keywords = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", cand_text))
@@ -148,20 +219,24 @@ class CriticService:
 
         overlapping_paper_ids = list(dict.fromkeys(overlapping_paper_ids))
 
-        # Check for grounded rejection from structured PaperCard evidence in memory
+        # Check for context-compatible grounded rejection from stored PaperCards
         invalidating_paper_id: str | None = None
+        invalidating_evidence_ref: EvidenceRef | None = None
+
         for stored_card in memory_cards:
             if stored_card.card.paper_id in candidate.supporting_papers:
                 continue
+
             card = stored_card.card
-            structured_text = " ".join(
-                card.contributions
-                + card.methods
-                + [c.claim for c in card.main_claims]
-            ).lower()
-            card_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", structured_text))
-            if len(candidate_keywords & card_words) >= 3:
+            paper_title = f"Paper {card.paper_id}"
+
+            is_rejected, ev_ref = _check_context_compatibility_and_rejection(
+                card, candidate, paper_title
+            )
+
+            if is_rejected and ev_ref:
                 invalidating_paper_id = card.paper_id
+                invalidating_evidence_ref = ev_ref
                 break
 
         # Decision matrix
@@ -169,7 +244,7 @@ class CriticService:
         rationale: str
         critic_caveats: list[str] = []
 
-        if invalidating_paper_id:
+        if invalidating_paper_id and invalidating_evidence_ref:
             decision = "rejected"
             rationale = (
                 f"Ground evidence in stored PaperCard for paper '{invalidating_paper_id}' "
@@ -222,6 +297,8 @@ class CriticService:
 
         updated_provenance = candidate.provenance.model_copy(deep=True)
         updated_provenance.retrievals.extend(retrieval_records)
+        if invalidating_evidence_ref:
+            updated_provenance.conflicting_evidence.append(invalidating_evidence_ref)
 
         updated_candidate = candidate.model_copy(
             update={
