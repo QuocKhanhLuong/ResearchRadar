@@ -172,3 +172,59 @@ class DigestRunTable(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     safe_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GapCandidateTable(Base):
+    """Persisted research gap candidate and its provenance snapshot."""
+
+    __tablename__ = "gap_candidates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text)
+    gap_type: Mapped[str] = mapped_column(String(64), index=True)
+    research_question: Mapped[str] = mapped_column(Text)
+    supporting_papers: Mapped[list[str]] = mapped_column(JSON, default=list)
+    conflicting_papers: Mapped[list[str]] = mapped_column(JSON, default=list)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    novelty_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    importance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    feasibility_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    search_scope: Mapped[str] = mapped_column(Text)
+    caveats: Mapped[list[str]] = mapped_column(JSON, default=list)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    review_status: Mapped[str] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+    reviews: Mapped[list[GapReviewTable]] = relationship(
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class GapReviewTable(Base):
+    """Append-only Critic review log for a candidate gap."""
+
+    __tablename__ = "gap_reviews"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("gap_candidates.id", ondelete="CASCADE"),
+        index=True,
+    )
+    review_version: Mapped[int] = mapped_column(Integer)
+    queries_used: Mapped[list[str]] = mapped_column(JSON, default=list)
+    retrieval_records: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    new_paper_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    overlapping_paper_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    decision: Mapped[str] = mapped_column(String(32), index=True)
+    rationale: Mapped[str] = mapped_column(Text)
+    caveats: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+    candidate: Mapped[GapCandidateTable] = relationship(back_populates="reviews")
+

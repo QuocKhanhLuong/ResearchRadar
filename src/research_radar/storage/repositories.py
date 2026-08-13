@@ -16,10 +16,19 @@ from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
-from research_radar.models import Paper, PaperCard
+from research_radar.models import (
+    CandidateGap,
+    CriticReview,
+    GapProvenance,
+    Paper,
+    PaperCard,
+    RetrievalRecord,
+)
 from research_radar.storage.database import Database
 from research_radar.storage.tables import (
     DigestRunTable,
+    GapCandidateTable,
+    GapReviewTable,
     PaperCardTable,
     PaperSourceTable,
     PaperTable,
@@ -143,6 +152,17 @@ class DigestRun:
     created_at: datetime
     sent_at: datetime | None
     safe_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedCorpusResult:
+    """The result of scoping persisted papers/cards by topic."""
+
+    cards: tuple[StoredPaperCard, ...]
+    papers: tuple[StoredPaper, ...]
+    corpus_paper_ids: tuple[str, ...]
+    missing_cards_paper_ids: tuple[str, ...]
+    total_matching_papers: int
 
 
 class ResearchRepository:
@@ -764,6 +784,202 @@ class ResearchRepository:
             row.safe_error = _bounded_error(safe_error)
             return True
 
+    def get_scoped_corpus(self, topic: str, limit: int = 50) -> ScopedCorpusResult:
+        """Deterministically select stored PaperCards and papers matching a topic query."""
+
+        tokens = _lexical_tokens(topic)
+        if not tokens:
+            return ScopedCorpusResult((), (), (), (), 0)
+        _validate_limit(limit)
+
+        with self._session_scope() as session:
+            rows = session.scalars(
+                select(PaperTable)
+                .options(
+                    selectinload(PaperTable.sources),
+                    selectinload(PaperTable.paper_card),
+                )
+                .order_by(desc(PaperTable.first_discovered_at), PaperTable.id)
+            ).all()
+
+            scored: list[tuple[int, PaperTable]] = []
+            for row in rows:
+                title_tokens = set(row.normalized_title.split())
+                abstract_tokens = set(_lexical_tokens(row.abstract or ""))
+                card_tokens = _paper_card_tokens(row.paper_card)
+                title_hits = sum(token in title_tokens for token in tokens)
+                abstract_hits = sum(token in abstract_tokens for token in tokens)
+                card_hits = sum(token in card_tokens for token in tokens)
+                score = (3 * title_hits) + (2 * abstract_hits) + card_hits
+                if score > 0:
+                    scored.append((score, row))
+
+            scored.sort(
+                key=lambda item: (
+                    -item[0],
+                    -(item[1].publication_year or 0),
+                    -(item[1].citation_count or 0),
+                    item[1].normalized_title,
+                )
+            )
+            top_rows = scored[:limit]
+
+            cards: list[StoredPaperCard] = []
+            papers: list[StoredPaper] = []
+            corpus_paper_ids: list[str] = []
+            missing_cards: list[str] = []
+
+            for _, paper_row in top_rows:
+                stored_paper = _to_stored_paper(paper_row)
+                papers.append(stored_paper)
+                corpus_paper_ids.append(stored_paper.id)
+                if paper_row.paper_card is not None:
+                    cards.append(_to_stored_paper_card(paper_row.paper_card))
+                else:
+                    missing_cards.append(stored_paper.id)
+
+            return ScopedCorpusResult(
+                cards=tuple(cards),
+                papers=tuple(papers),
+                corpus_paper_ids=tuple(corpus_paper_ids),
+                missing_cards_paper_ids=tuple(missing_cards),
+                total_matching_papers=len(scored),
+            )
+
+    def save_candidate(self, candidate: CandidateGap) -> CandidateGap:
+        """Persist or update a CandidateGap and its provenance snapshot."""
+
+        now = _utc_now()
+        with self._session_scope() as session:
+            row = session.get(GapCandidateTable, candidate.id)
+            prov_dict = candidate.provenance.model_dump(mode="json")
+            if row is None:
+                row = GapCandidateTable(
+                    id=candidate.id,
+                    title=candidate.title,
+                    description=candidate.description,
+                    gap_type=candidate.gap_type,
+                    research_question=candidate.research_question,
+                    supporting_papers=list(candidate.supporting_papers),
+                    conflicting_papers=list(candidate.conflicting_papers),
+                    evidence_count=candidate.evidence_count,
+                    novelty_score=candidate.novelty_score,
+                    evidence_score=candidate.evidence_score,
+                    importance_score=candidate.importance_score,
+                    feasibility_score=candidate.feasibility_score,
+                    confidence=candidate.confidence,
+                    search_scope=candidate.search_scope,
+                    caveats=list(candidate.caveats),
+                    provenance=prov_dict,
+                    review_status=candidate.review_status,
+                    created_at=candidate.created_at or now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.title = candidate.title
+                row.description = candidate.description
+                row.gap_type = candidate.gap_type
+                row.research_question = candidate.research_question
+                row.supporting_papers = list(candidate.supporting_papers)
+                row.conflicting_papers = list(candidate.conflicting_papers)
+                row.evidence_count = candidate.evidence_count
+                row.novelty_score = candidate.novelty_score
+                row.evidence_score = candidate.evidence_score
+                row.importance_score = candidate.importance_score
+                row.feasibility_score = candidate.feasibility_score
+                row.confidence = candidate.confidence
+                row.search_scope = candidate.search_scope
+                row.caveats = list(candidate.caveats)
+                row.provenance = prov_dict
+                row.review_status = candidate.review_status
+                row.updated_at = now
+            return candidate
+
+    def get_candidate(self, candidate_id: str) -> CandidateGap | None:
+        """Retrieve a candidate gap by its ID."""
+
+        with self._session_scope() as session:
+            row = session.get(GapCandidateTable, candidate_id)
+            if row is None:
+                return None
+            return _to_candidate_gap(row)
+
+    def list_candidates(
+        self, gap_type: str | None = None, limit: int = 50
+    ) -> list[CandidateGap]:
+        """List candidate gaps ordered by creation time."""
+
+        _validate_limit(limit)
+        with self._session_scope() as session:
+            stmt = select(GapCandidateTable).order_by(desc(GapCandidateTable.created_at))
+            if gap_type:
+                stmt = stmt.where(GapCandidateTable.gap_type == gap_type)
+            rows = session.scalars(stmt.limit(limit)).all()
+            return [_to_candidate_gap(row) for row in rows]
+
+    def save_critic_review(self, review: CriticReview) -> CriticReview:
+        """Append a CriticReview record to the audit trail."""
+
+        now = _utc_now()
+        with self._session_scope() as session:
+            candidate = session.get(GapCandidateTable, review.candidate_id)
+            if candidate is None:
+                raise StorageError(f"CandidateGap {review.candidate_id} does not exist.")
+            review_id = _new_id()
+            row = GapReviewTable(
+                id=review_id,
+                candidate_id=review.candidate_id,
+                review_version=review.review_version,
+                queries_used=list(review.queries_used),
+                retrieval_records=[r.model_dump(mode="json") for r in review.retrieval_records],
+                new_paper_ids=list(review.new_paper_ids),
+                overlapping_paper_ids=list(review.overlapping_paper_ids),
+                decision=review.decision,
+                rationale=review.rationale,
+                caveats=list(review.caveats),
+                created_at=review.created_at or now,
+            )
+            session.add(row)
+        return review
+
+    def list_critic_reviews(self, candidate_id: str) -> list[CriticReview]:
+        """List all CriticReviews for a candidate gap in version order."""
+
+        with self._session_scope() as session:
+            rows = session.scalars(
+                select(GapReviewTable)
+                .where(GapReviewTable.candidate_id == candidate_id)
+                .order_by(GapReviewTable.review_version)
+            ).all()
+            return [_to_critic_review(row) for row in rows]
+
+    def update_candidate_status(
+        self,
+        candidate_id: str,
+        status: str,
+        *,
+        caveats: list[str] | None = None,
+        confidence: float | None = None,
+        provenance: GapProvenance | None = None,
+    ) -> bool:
+        """Update candidate review status, caveats, and confidence without destroying provenance."""
+
+        now = _utc_now()
+        with self._session_scope() as session:
+            row = session.get(GapCandidateTable, candidate_id)
+            if row is None:
+                return False
+            row.review_status = status
+            row.updated_at = now
+            if caveats is not None:
+                row.caveats = list(caveats)
+            if confidence is not None:
+                row.confidence = confidence
+            if provenance is not None:
+                row.provenance = provenance.model_dump(mode="json")
+            return True
+
     @contextmanager
     def _session_scope(self) -> Iterable[Session]:
         session = self._session_factory()
@@ -1050,6 +1266,47 @@ def _to_stored_paper_card(row: PaperCardTable) -> StoredPaperCard:
         llm_model=row.llm_model,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _to_candidate_gap(row: GapCandidateTable) -> CandidateGap:
+    return CandidateGap(
+        id=row.id,
+        title=row.title,
+        description=row.description,
+        gap_type=row.gap_type,  # type: ignore[arg-type]
+        research_question=row.research_question,
+        supporting_papers=list(row.supporting_papers or []),
+        conflicting_papers=list(row.conflicting_papers or []),
+        evidence_count=row.evidence_count,
+        novelty_score=row.novelty_score,
+        evidence_score=row.evidence_score,
+        importance_score=row.importance_score,
+        feasibility_score=row.feasibility_score,
+        confidence=row.confidence,
+        search_scope=row.search_scope,
+        caveats=list(row.caveats or []),
+        provenance=GapProvenance.model_validate(row.provenance),
+        review_status=row.review_status,  # type: ignore[arg-type]
+        created_at=row.created_at,
+    )
+
+
+def _to_critic_review(row: GapReviewTable) -> CriticReview:
+    return CriticReview(
+        candidate_id=row.candidate_id,
+        review_version=row.review_version,
+        queries_used=list(row.queries_used or []),
+        retrieval_records=[
+            RetrievalRecord.model_validate(item)
+            for item in (row.retrieval_records or [])
+        ],
+        new_paper_ids=list(row.new_paper_ids or []),
+        overlapping_paper_ids=list(row.overlapping_paper_ids or []),
+        decision=row.decision,  # type: ignore[arg-type]
+        rationale=row.rationale,
+        caveats=list(row.caveats or []),
+        created_at=row.created_at,
     )
 
 
