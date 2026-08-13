@@ -9,7 +9,7 @@ from research_radar.models.gap import (
     RetrievalRecord,
 )
 from research_radar.models.paper import Paper
-from research_radar.models.paper_card import EvidenceClaim, PaperCard
+from research_radar.models.paper_card import EvidenceClaim, PaperCard, StructuredEvidence
 
 __all__ = [
     "CandidateGap",
@@ -21,5 +21,6 @@ __all__ = [
     "PaperCard",
     "PaperDocument",
     "RetrievalRecord",
+    "StructuredEvidence",
 ]
 

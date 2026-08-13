@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -11,6 +13,17 @@ class EvidenceClaim(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     claim: str = Field(min_length=1)
+    source_section: str | None = None
+    supporting_text: str | None = None
+
+
+class StructuredEvidence(BaseModel):
+    """An extracted evidence item with explicit status and provenance."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    value: str = Field(min_length=1)
+    status: Literal["observed", "explicitly_absent", "unknown"] = "observed"
     source_section: str | None = None
     supporting_text: str | None = None
 
@@ -27,6 +40,9 @@ class PaperCard(BaseModel):
     methods: list[str] = Field(default_factory=list)
     datasets: list[str] = Field(default_factory=list)
     metrics: list[str] = Field(default_factory=list)
+    tasks: list[StructuredEvidence] = Field(default_factory=list)
+    modalities: list[StructuredEvidence] = Field(default_factory=list)
+    evaluation_conditions: list[StructuredEvidence] = Field(default_factory=list)
     main_claims: list[EvidenceClaim] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     future_work: list[str] = Field(default_factory=list)

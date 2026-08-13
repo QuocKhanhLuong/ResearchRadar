@@ -23,6 +23,7 @@ from research_radar.models import (
     Paper,
     PaperCard,
     RetrievalRecord,
+    StructuredEvidence,
 )
 from research_radar.storage.database import Database
 from research_radar.storage.tables import (
@@ -1240,6 +1241,14 @@ def _to_stored_paper(row: PaperTable) -> StoredPaper:
     )
 
 
+def _parse_structured_evidence(items: Iterable[object] | None) -> list[StructuredEvidence]:
+    parsed: list[StructuredEvidence] = []
+    for item in items or []:
+        if isinstance(item, Mapping):
+            parsed.append(StructuredEvidence.model_validate(item))
+    return parsed
+
+
 def _to_paper_card(row: PaperCardTable) -> PaperCard:
     return PaperCard(
         paper_id=row.paper_id,
@@ -1249,6 +1258,11 @@ def _to_paper_card(row: PaperCardTable) -> PaperCard:
         methods=list(row.methods or []),
         datasets=list(row.datasets or []),
         metrics=list(row.metrics or []),
+        tasks=_parse_structured_evidence(getattr(row, "tasks", None)),
+        modalities=_parse_structured_evidence(getattr(row, "modalities", None)),
+        evaluation_conditions=_parse_structured_evidence(
+            getattr(row, "evaluation_conditions", None)
+        ),
         main_claims=list(row.main_claims or []),
         limitations=list(row.limitations or []),
         future_work=list(row.future_work or []),
@@ -1342,6 +1356,11 @@ def _copy_card_values(row: PaperCardTable, card: PaperCard) -> None:
     row.methods = list(card.methods)
     row.datasets = list(card.datasets)
     row.metrics = list(card.metrics)
+    row.tasks = [item.model_dump(mode="json") for item in card.tasks]
+    row.modalities = [item.model_dump(mode="json") for item in card.modalities]
+    row.evaluation_conditions = [
+        item.model_dump(mode="json") for item in card.evaluation_conditions
+    ]
     row.main_claims = [claim.model_dump(mode="json") for claim in card.main_claims]
     row.limitations = list(card.limitations)
     row.future_work = list(card.future_work)
@@ -1355,6 +1374,9 @@ def _copy_card_row(target: PaperCardTable, source: PaperCardTable) -> None:
     target.methods = list(source.methods or [])
     target.datasets = list(source.datasets or [])
     target.metrics = list(source.metrics or [])
+    target.tasks = list(getattr(source, "tasks", None) or [])
+    target.modalities = list(getattr(source, "modalities", None) or [])
+    target.evaluation_conditions = list(getattr(source, "evaluation_conditions", None) or [])
     target.main_claims = list(source.main_claims or [])
     target.limitations = list(source.limitations or [])
     target.future_work = list(source.future_work or [])
@@ -1514,6 +1536,14 @@ def _paper_card_tokens(card: PaperCardTable | None) -> set[str]:
         card.failure_cases,
     ):
         values.extend(str(item) for item in field or [])
+    for struct_field in (
+        getattr(card, "tasks", None),
+        getattr(card, "modalities", None),
+        getattr(card, "evaluation_conditions", None),
+    ):
+        for item in struct_field or []:
+            if isinstance(item, Mapping):
+                values.append(str(item.get("value") or ""))
     for claim in card.main_claims or []:
         if isinstance(claim, Mapping):
             values.extend(str(claim.get(key) or "") for key in ("claim", "supporting_text"))
