@@ -143,3 +143,31 @@ def test_paper_search_embeds_render_normalized_metadata() -> None:
     assert embed.title == "1. Useful paper"
     assert "Ada" in (embed.description or "")
     assert embed.url == "https://doi.org/10.1/example"
+
+
+def test_paper_search_embeds_bound_untrusted_provider_metadata() -> None:
+    from research_radar.bot.embeds import (
+        MAX_EMBED_DESCRIPTION_CHARS,
+        MAX_EMBED_TITLE_CHARS,
+        paper_search_embeds,
+    )
+
+    paper = Paper(
+        id="openalex:huge",
+        title="T" * 2_000,
+        authors=["A" * 1_000] * 30,
+        venue="V" * 1_000,
+        url="https://example.test/" + "x" * 3_000,
+        source="openalex",
+    )
+    results = [
+        RankedPaper(paper.model_copy(update={"id": f"openalex:{index}"}), 1, 1, 1, 1, 1, 1)
+        for index in range(12)
+    ]
+
+    embeds = paper_search_embeds(SearchResult(papers=results))
+
+    assert len(embeds) == 10
+    assert all(len(embed.title or "") <= MAX_EMBED_TITLE_CHARS for embed in embeds)
+    assert all(len(embed.description or "") <= MAX_EMBED_DESCRIPTION_CHARS for embed in embeds)
+    assert all(embed.url is None for embed in embeds)

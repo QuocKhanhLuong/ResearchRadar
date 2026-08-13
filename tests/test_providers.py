@@ -54,6 +54,23 @@ async def test_openalex_normalizes_inverted_abstract_and_sparse_metadata() -> No
     assert paper.external_ids == {"pmid": "99", "openalex": "W1", "doi": "10.1000/example"}
 
 
+@pytest.mark.asyncio
+async def test_openalex_keeps_api_key_out_of_request_urls_and_failure_messages() -> None:
+    secret = "review-secret"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "api_key" not in request.url.params
+        assert request.headers["authorization"] == f"Bearer {secret}"
+        return httpx.Response(401, request=request)
+
+    async with _client(httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderUnavailableError) as error:
+            await OpenAlexProvider(client, api_key=secret).search("query")
+
+    assert secret not in str(error.value)
+    assert "HTTP 401" in str(error.value)
+
+
 def test_openalex_abstract_reconstruction_tolerates_bad_shape() -> None:
     assert reconstruct_inverted_abstract({"a": [1, "bad"], "start": [0]}) == "start a"
     assert reconstruct_inverted_abstract([]) is None
@@ -89,6 +106,13 @@ async def test_arxiv_parses_atom_and_strips_identity_version() -> None:
     assert papers[0].id == "arxiv:2401.01234"
     assert papers[0].title == "Useful Paper"
     assert papers[0].doi == "10.1000/arxiv"
+
+
+def test_arxiv_legacy_identity_preserves_its_archive_prefix() -> None:
+    from research_radar.providers.normalization import normalize_arxiv_id
+
+    assert normalize_arxiv_id("https://arxiv.org/abs/hep-th/9901001v2") == "hep-th/9901001"
+    assert normalize_arxiv_id("https://arxiv.org/abs/math/9901001v2") == "math/9901001"
 
 
 @pytest.mark.asyncio

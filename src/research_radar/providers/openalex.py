@@ -10,7 +10,13 @@ import httpx
 
 from research_radar.errors import ProviderUnavailableError
 from research_radar.models.paper import Paper
-from research_radar.providers.base import clamp_provider_limit
+from research_radar.providers.base import (
+    DEFAULT_HTTP_TIMEOUT_SECONDS,
+    clamp_provider_limit,
+    get_with_retry,
+    provider_timeout,
+    safe_provider_error,
+)
 from research_radar.providers.normalization import (
     integer_or_none,
     known_external_ids,
@@ -37,10 +43,12 @@ class OpenAlexProvider:
         *,
         email: str | None = None,
         api_key: str | None = None,
+        timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> None:
         self._client = client
         self._email = email
         self._api_key = api_key
+        self._timeout = provider_timeout(timeout_seconds)
 
     async def search(self, query: str, limit: int = 10) -> list[Paper]:
         """Request one bounded page and adapt usable records into ``Paper`` objects."""
@@ -50,15 +58,20 @@ class OpenAlexProvider:
             "per-page": clamp_provider_limit(limit, maximum=100),
             "select": self._select,
         }
-        if self._api_key:
-            params["api_key"] = self._api_key
         headers = {"User-Agent": f"ResearchRadar/0.1 ({self._email})"} if self._email else {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         try:
-            response = await self._client.get(self.base_url, params=params, headers=headers)
-            response.raise_for_status()
+            response = await get_with_retry(
+                self._client,
+                self.base_url,
+                params=params,
+                headers=headers,
+                timeout=self._timeout,
+            )
             payload = response.json()
         except (httpx.HTTPError, ValueError) as error:
-            raise ProviderUnavailableError(f"OpenAlex search failed: {error}") from error
+            raise ProviderUnavailableError(safe_provider_error("OpenAlex", error)) from error
 
         results = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(results, list):

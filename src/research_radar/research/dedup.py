@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from research_radar.models.paper import Paper
 from research_radar.providers.normalization import normalize_arxiv_id, normalize_doi
@@ -42,7 +42,7 @@ def identity_keys(paper: Paper) -> list[str]:
 
 
 def deduplicate(papers: Iterable[Paper]) -> list[Paper]:
-    """Group any linked exact identities, then merge each group deterministically."""
+    """Group exact IDs first, then titles only when their strong IDs do not conflict."""
 
     records = list(papers)
     parent = list(range(len(records)))
@@ -60,16 +60,68 @@ def deduplicate(papers: Iterable[Paper]) -> list[Paper]:
 
     seen: dict[str, int] = {}
     for index, paper in enumerate(records):
-        for key in identity_keys(paper):
+        for key in _strong_identity_keys(paper):
             if key in seen:
                 union(index, seen[key])
             else:
                 seen[key] = index
 
+    title_groups: dict[str, list[int]] = defaultdict(list)
+    for index, paper in enumerate(records):
+        title = normalize_title(paper.title)
+        if len(title) >= 8:
+            title_groups[title].append(index)
+    for indices in title_groups.values():
+        roots: list[int] = []
+        for index in indices:
+            root = find(index)
+            if root not in roots:
+                roots.append(root)
+        if not roots:
+            continue
+        target = roots[0]
+        for candidate in roots[1:]:
+            if _groups_have_conflicting_strong_ids(records, find, target, candidate):
+                continue
+            union(target, candidate)
+            target = find(target)
+
     groups: dict[int, list[Paper]] = defaultdict(list)
     for index, paper in enumerate(records):
         groups[find(index)].append(paper)
     return [merge_papers(group) for _, group in sorted(groups.items(), key=lambda item: item[0])]
+
+
+def _strong_identity_keys(paper: Paper) -> list[str]:
+    """Return stable non-title identities used before the conservative title fallback."""
+
+    return [key for key in identity_keys(paper) if not key.startswith("title:")]
+
+
+def _groups_have_conflicting_strong_ids(
+    records: list[Paper],
+    find: Callable[[int], int],
+    left_root: int,
+    right_root: int,
+) -> bool:
+    """Prevent a title bridge from joining groups with disagreeing identifier types."""
+
+    left = _strong_identifier_values(
+        paper for index, paper in enumerate(records) if find(index) == left_root
+    )
+    right = _strong_identifier_values(
+        paper for index, paper in enumerate(records) if find(index) == right_root
+    )
+    return any(left[name].isdisjoint(right[name]) for name in left.keys() & right.keys())
+
+
+def _strong_identifier_values(papers: Iterable[Paper]) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = defaultdict(set)
+    for paper in papers:
+        for key in _strong_identity_keys(paper):
+            prefix, value = key.rsplit(":", maxsplit=1)
+            values[prefix].add(value)
+    return values
 
 
 def merge_papers(papers: Iterable[Paper]) -> Paper:

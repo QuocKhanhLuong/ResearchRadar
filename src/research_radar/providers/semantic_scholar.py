@@ -10,7 +10,13 @@ import httpx
 
 from research_radar.errors import ProviderUnavailableError
 from research_radar.models.paper import Paper
-from research_radar.providers.base import clamp_provider_limit
+from research_radar.providers.base import (
+    DEFAULT_HTTP_TIMEOUT_SECONDS,
+    clamp_provider_limit,
+    get_with_retry,
+    provider_timeout,
+    safe_provider_error,
+)
 from research_radar.providers.normalization import (
     integer_or_none,
     known_external_ids,
@@ -28,16 +34,24 @@ class SemanticScholarProvider:
     base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
     fields = "paperId,externalIds,title,abstract,authors,year,venue,url,citationCount"
 
-    def __init__(self, client: httpx.AsyncClient, *, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        api_key: str | None = None,
+        timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
+    ) -> None:
         self._client = client
         self._api_key = api_key
+        self._timeout = provider_timeout(timeout_seconds)
 
     async def search(self, query: str, limit: int = 10) -> list[Paper]:
         """Search with a small explicit field projection and normalize its batch."""
 
         headers = {"x-api-key": self._api_key} if self._api_key else {}
         try:
-            response = await self._client.get(
+            response = await get_with_retry(
+                self._client,
                 self.base_url,
                 params={
                     "query": query.replace("-", " "),
@@ -45,11 +59,13 @@ class SemanticScholarProvider:
                     "fields": self.fields,
                 },
                 headers=headers,
+                timeout=self._timeout,
             )
-            response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as error:
-            raise ProviderUnavailableError(f"Semantic Scholar search failed: {error}") from error
+            raise ProviderUnavailableError(
+                safe_provider_error("Semantic Scholar", error)
+            ) from error
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             raise ProviderUnavailableError(

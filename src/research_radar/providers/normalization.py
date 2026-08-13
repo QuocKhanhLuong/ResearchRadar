@@ -5,9 +5,15 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 DOI_PREFIX_PATTERN = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.IGNORECASE)
 ARXIV_VERSION_PATTERN = re.compile(r"v\d+$", re.IGNORECASE)
+ARXIV_PREFIX_PATTERN = re.compile(r"^arxiv:\s*", re.IGNORECASE)
+LEGACY_ARXIV_PATTERN = re.compile(
+    r"^(?P<archive>[a-z][a-z.-]+)/(?P<number>\d{7})(?:v\d+)?$",
+    re.IGNORECASE,
+)
 
 
 def normalize_doi(value: object) -> str | None:
@@ -20,11 +26,25 @@ def normalize_doi(value: object) -> str | None:
 
 
 def normalize_arxiv_id(value: object) -> str | None:
-    """Extract an arXiv identifier and remove its version for identity matching."""
+    """Extract an arXiv identifier while preserving legacy archive namespaces."""
 
     if not isinstance(value, str):
         return None
-    cleaned = value.strip().rstrip("/").split("/")[-1]
+    cleaned = ARXIV_PREFIX_PATTERN.sub("", value.strip()).rstrip("/")
+    parsed = urlsplit(cleaned)
+    if parsed.scheme and parsed.netloc:
+        path = parsed.path.strip("/")
+        for marker in ("abs/", "pdf/"):
+            if path.startswith(marker):
+                path = path.removeprefix(marker)
+                break
+        cleaned = path
+    cleaned = cleaned.removesuffix(".pdf").strip("/")
+    legacy_match = LEGACY_ARXIV_PATTERN.fullmatch(cleaned)
+    if legacy_match:
+        cleaned = f"{legacy_match.group('archive').casefold()}/{legacy_match.group('number')}"
+        return cleaned
+    cleaned = cleaned.split("/")[-1]
     cleaned = ARXIV_VERSION_PATTERN.sub("", cleaned)
     return cleaned or None
 

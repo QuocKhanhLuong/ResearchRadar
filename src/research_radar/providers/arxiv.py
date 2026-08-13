@@ -11,7 +11,13 @@ import httpx
 
 from research_radar.errors import ProviderUnavailableError
 from research_radar.models.paper import Paper
-from research_radar.providers.base import clamp_provider_limit
+from research_radar.providers.base import (
+    DEFAULT_HTTP_TIMEOUT_SECONDS,
+    clamp_provider_limit,
+    get_with_retry,
+    provider_timeout,
+    safe_provider_error,
+)
 from research_radar.providers.normalization import normalize_arxiv_id, normalize_doi, string_or_none
 
 logger = logging.getLogger(__name__)
@@ -26,9 +32,16 @@ class ArxivProvider:
     name = "arxiv"
     base_url = "https://export.arxiv.org/api/query"
 
-    def __init__(self, client: httpx.AsyncClient, *, minimum_interval_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        minimum_interval_seconds: float = 3.0,
+        timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
+    ) -> None:
         self._client = client
         self._minimum_interval_seconds = minimum_interval_seconds
+        self._timeout = provider_timeout(timeout_seconds)
         self._request_lock = asyncio.Lock()
         self._last_request_at = 0.0
 
@@ -37,7 +50,8 @@ class ArxivProvider:
 
         await self._wait_for_request_slot()
         try:
-            response = await self._client.get(
+            response = await get_with_retry(
+                self._client,
                 self.base_url,
                 params={
                     "search_query": f"all:{query}",
@@ -46,11 +60,11 @@ class ArxivProvider:
                     "sortBy": "relevance",
                     "sortOrder": "descending",
                 },
+                timeout=self._timeout,
             )
-            response.raise_for_status()
             root = element_tree.fromstring(response.content)
         except (httpx.HTTPError, element_tree.ParseError) as error:
-            raise ProviderUnavailableError(f"arXiv search failed: {error}") from error
+            raise ProviderUnavailableError(safe_provider_error("arXiv", error)) from error
 
         papers: list[Paper] = []
         for entry in root.findall(f"{ATOM}entry"):
