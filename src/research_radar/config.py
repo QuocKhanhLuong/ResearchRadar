@@ -14,7 +14,12 @@ from research_radar.errors import ConfigurationError
 class Settings(BaseSettings):
     """Runtime settings with safe defaults for local development and tests."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        env_ignore_empty=True,
+    )
 
     discord_token: SecretStr | None = None
     discord_guild_id: int | None = None

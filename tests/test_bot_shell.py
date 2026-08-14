@@ -53,7 +53,7 @@ async def test_bot_factory_registers_only_ping_without_message_content_intent() 
 async def test_command_sync_is_global_without_a_development_guild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bot = create_bot(Settings())
+    bot = create_bot(Settings(_env_file=None))
     sync = AsyncMock(return_value=[])
     monkeypatch.setattr(bot.tree, "sync", sync)
     try:

@@ -5,7 +5,7 @@ from research_radar.errors import ConfigurationError
 
 
 def test_settings_have_safe_defaults() -> None:
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.database_url == "sqlite:///data/research_radar.db"
     assert settings.llm_provider == "mock"
@@ -14,7 +14,7 @@ def test_settings_have_safe_defaults() -> None:
 
 
 def test_discord_token_is_required_only_when_requested() -> None:
-    settings = Settings(discord_token=None)
+    settings = Settings(discord_token=None, _env_file=None)
 
     try:
         settings.require_discord_token()

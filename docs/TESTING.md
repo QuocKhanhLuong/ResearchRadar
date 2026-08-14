@@ -46,7 +46,7 @@ cp .env.example .env
 
 Set the required environment variables in `.env`:
 ```ini
-DISCORD_BOT_TOKEN="your_discord_bot_token_here"
+DISCORD_TOKEN="your_discord_token_here"
 DISCORD_GUILD_ID="optional_guild_id_for_instant_slash_sync"
 DATABASE_URL="sqlite:///data/research_radar.db"
 
