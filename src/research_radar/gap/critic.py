@@ -224,7 +224,10 @@ class CriticService:
         invalidating_evidence_ref: EvidenceRef | None = None
 
         for stored_card in memory_cards:
-            if stored_card.card.paper_id in candidate.supporting_papers:
+            if (
+                stored_card.card.paper_id in candidate.supporting_papers
+                or stored_card.card.paper_id in candidate.conflicting_papers
+            ):
                 continue
 
             card = stored_card.card

@@ -1,5 +1,6 @@
 """Evidence-backed research gap analysis domain services."""
 
+from research_radar.gap.contradiction import ContradictionGapMiner
 from research_radar.gap.corpus import ScopedCorpusService
 from research_radar.gap.coverage import CoverageGapMiner
 from research_radar.gap.critic import CriticService
@@ -12,6 +13,7 @@ from research_radar.gap.miner import (
 from research_radar.gap.service import GapAnalysisResult, GapService
 
 __all__ = [
+    "ContradictionGapMiner",
     "CoverageGapMiner",
     "CriticService",
     "EvaluationGapMiner",

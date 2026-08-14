@@ -24,7 +24,7 @@ class GapCommandService(Protocol):
         self,
         topic: str,
         count: int = 1,
-        gap_type: Literal["explicit", "coverage", "evaluation"] = "explicit",
+        gap_type: Literal["explicit", "coverage", "evaluation", "contradiction"] = "explicit",
     ) -> GapAnalysisResult: ...
 
     def get_candidate_detail(
@@ -103,14 +103,26 @@ def render_gap_embed(candidate: CandidateGap, review: CriticReview | None = None
     if candidate.provenance.supporting_evidence:
         papers_summary: list[str] = []
         for ref in candidate.provenance.supporting_evidence[:5]:
-            papers_summary.append(f"• **{ref.paper_title}**: *\"{ref.supporting_text}\"*")
+            papers_summary.append(f"• **Claim A ({ref.paper_title})**: *\"{ref.supporting_text}\"*")
         embed.add_field(
-            name="Supporting Evidence",
+            name="Supporting Evidence (Claim A)",
             value="\n".join(papers_summary)[:1024],
             inline=False,
         )
 
-    embed.set_footer(text=f"Candidate ID: {candidate.id} • ResearchRadar V2A")
+    if candidate.provenance.conflicting_evidence:
+        conflict_summary: list[str] = []
+        for ref in candidate.provenance.conflicting_evidence[:5]:
+            conflict_summary.append(
+                f"• **Claim B ({ref.paper_title})**: *\"{ref.supporting_text}\"*"
+            )
+        embed.add_field(
+            name="Conflicting Evidence (Claim B)",
+            value="\n".join(conflict_summary)[:1024],
+            inline=False,
+        )
+
+    embed.set_footer(text=f"Candidate ID: {candidate.id} • ResearchRadar V2D")
     return embed
 
 
@@ -124,7 +136,7 @@ def register_gap_commands(
         interaction: discord.Interaction,
         topic: str,
         count: int = 1,
-        type: Literal["explicit", "coverage", "evaluation"] = "explicit",
+        type: Literal["explicit", "coverage", "evaluation", "contradiction"] = "explicit",
     ) -> None:
         await interaction.response.defer(thinking=True)
         try:
