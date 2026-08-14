@@ -791,6 +791,12 @@ class ResearchRepository:
             row.safe_error = _bounded_error(safe_error)
             return True
 
+    def search_papers(self, query: str, limit: int = 20) -> list[StoredPaper]:
+        """Search stored papers matching a lexical query."""
+
+        corpus = self.get_scoped_corpus(query, limit=limit)
+        return list(corpus.papers)
+
     def get_scoped_corpus(self, topic: str, limit: int = 50) -> ScopedCorpusResult:
         """Deterministically select stored PaperCards and papers matching a topic query."""
 

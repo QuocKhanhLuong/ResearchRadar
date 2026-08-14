@@ -13,6 +13,7 @@ from typing import Protocol
 import discord
 from discord import app_commands
 
+from research_radar.bot.commands.ask import AskCommandRegistrationService, register_ask_command
 from research_radar.bot.commands.digest import register_digest_command
 from research_radar.bot.commands.gap import register_gap_commands
 from research_radar.bot.commands.paper import register_paper_command
@@ -74,6 +75,7 @@ class ResearchRadarBot(discord.Client):
         digest_service: DigestCommandRegistrationService | None = None,
         gap_service: GapCommandRegistrationService | None = None,
         project_service: ProjectCommandService | None = None,
+        ask_service: AskCommandRegistrationService | None = None,
     ) -> None:
         super().__init__(intents=_application_intents())
         self.settings = settings
@@ -95,6 +97,8 @@ class ResearchRadarBot(discord.Client):
             register_gap_commands(self.tree, gap_service)
         if project_service is not None:
             register_project_commands(self.tree, project_service)
+        if ask_service is not None:
+            register_ask_command(self.tree, ask_service)
 
     async def setup_hook(self) -> None:
         """Synchronize slash commands before connecting to the gateway."""
@@ -167,6 +171,7 @@ def create_bot(
     digest_service: DigestCommandRegistrationService | None = None,
     gap_service: GapCommandRegistrationService | None = None,
     project_service: ProjectCommandService | None = None,
+    ask_service: AskCommandRegistrationService | None = None,
 ) -> ResearchRadarBot:
     """Construct a bot without requiring a token or a live Discord connection."""
 
@@ -180,6 +185,7 @@ def create_bot(
         digest_service=digest_service,
         gap_service=gap_service,
         project_service=project_service,
+        ask_service=ask_service,
     )
 
 
@@ -194,6 +200,7 @@ def run_bot(
     digest_service: DigestCommandRegistrationService | None = None,
     gap_service: GapCommandRegistrationService | None = None,
     project_service: ProjectCommandService | None = None,
+    ask_service: AskCommandRegistrationService | None = None,
 ) -> None:
     """Launch the Discord client after explicitly validating its required token."""
 
@@ -207,6 +214,7 @@ def run_bot(
         digest_service=digest_service,
         gap_service=gap_service,
         project_service=project_service,
+        ask_service=ask_service,
     )
     bot.run(settings.require_discord_token(), log_handler=None)
 
