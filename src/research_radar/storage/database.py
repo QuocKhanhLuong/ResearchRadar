@@ -10,6 +10,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from research_radar.storage.migrations import run_migrations
 from research_radar.storage.tables import Base
 
 
@@ -35,6 +36,7 @@ class Database:
         """Create the initial V1 schema when it does not already exist."""
 
         Base.metadata.create_all(self.engine)
+        run_migrations(self.engine)
 
     def dispose(self) -> None:
         """Release database connections during application shutdown."""
@@ -76,6 +78,7 @@ def initialize_schema(target: DatabaseTarget) -> None:
 
     engine = target.engine if isinstance(target, Database) else target
     Base.metadata.create_all(engine)
+    run_migrations(engine)
 
 
 def _ensure_sqlite_parent_directory(url: URL) -> None:

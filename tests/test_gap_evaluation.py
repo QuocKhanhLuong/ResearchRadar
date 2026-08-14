@@ -9,7 +9,7 @@ import pytest
 from research_radar.gap.evaluation import EvaluationGapMiner
 from research_radar.gap.service import GapService
 from research_radar.models.paper import Paper
-from research_radar.models.paper_card import PaperCard
+from research_radar.models.paper_card import PaperCard, StructuredEvidence
 from research_radar.research.scout import ScoutResult
 from research_radar.storage.database import Database
 from research_radar.storage.repositories import (
@@ -36,68 +36,40 @@ class FakeScout:
         )
 
 
-def test_evaluation_gap_miner_finds_underrepresented_conditions() -> None:
+def test_evaluation_gap_miner_finds_explicitly_absent_conditions() -> None:
     now = _utc_now()
 
     p1 = StoredPaper(
-        id="p1",
-        canonical_key="k1",
-        title="Super Resolution Model A",
-        abstract=None,
-        authors=[],
-        publication_year=2023,
-        venue=None,
-        doi=None,
-        url=None,
-        citation_count=0,
-        primary_source="arxiv",
-        sources=(),
-        first_discovered_at=now,
-        created_at=now,
-        updated_at=now,
+        id="p1", canonical_key="k1", title="Super Resolution Model A", abstract=None,
+        authors=[], publication_year=2023, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
     )
     p2 = StoredPaper(
-        id="p2",
-        canonical_key="k2",
-        title="Super Resolution Model B",
-        abstract=None,
-        authors=[],
-        publication_year=2024,
-        venue=None,
-        doi=None,
-        url=None,
-        citation_count=0,
-        primary_source="arxiv",
-        sources=(),
-        first_discovered_at=now,
-        created_at=now,
-        updated_at=now,
+        id="p2", canonical_key="k2", title="Super Resolution Model B", abstract=None,
+        authors=[], publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
     )
 
-    # Both papers evaluate Super Resolution CNN using PSNR/SSIM, but NEITHER tests scanner shift
+    # p1 explicitly states scanner shift was not evaluated; p2 has unknown
     card1 = StoredPaperCard(
         card=PaperCard(
-            paper_id="p1", methods=["Super Resolution CNN"], metrics=["PSNR", "SSIM"]
+            paper_id="p1",
+            methods=["Super Resolution CNN"],
+            evaluation_conditions=[
+                StructuredEvidence(
+                    value="scanner shift",
+                    status="explicitly_absent",
+                    supporting_text="We do not evaluate under scanner shift.",
+                )
+            ],
         ),
-        source_url=None,
-        document_sha256=None,
-        selected_sections=(),
-        llm_provider=None,
-        llm_model=None,
-        created_at=now,
-        updated_at=now,
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
     )
     card2 = StoredPaperCard(
-        card=PaperCard(
-            paper_id="p2", methods=["Super Resolution CNN"], metrics=["PSNR", "SSIM"]
-        ),
-        source_url=None,
-        document_sha256=None,
-        selected_sections=(),
-        llm_provider=None,
-        llm_model=None,
-        created_at=now,
-        updated_at=now,
+        card=PaperCard(paper_id="p2", methods=["Super Resolution CNN"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
     )
 
     corpus = ScopedCorpusResult(
@@ -121,6 +93,47 @@ def test_evaluation_gap_miner_finds_underrepresented_conditions() -> None:
     assert is_underrep
 
 
+def test_evaluation_gap_unknown_conditions_returns_no_candidates() -> None:
+    now = _utc_now()
+
+    p1 = StoredPaper(
+        id="p1", canonical_key="k1", title="Model A", abstract=None,
+        authors=[], publication_year=2023, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+    p2 = StoredPaper(
+        id="p2", canonical_key="k2", title="Model B", abstract=None,
+        authors=[], publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+
+    # Both cards have unknown evaluation conditions (no explicit evaluation_conditions items)
+    card1 = StoredPaperCard(
+        card=PaperCard(paper_id="p1", methods=["SR-CNN"], metrics=["PSNR"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+    card2 = StoredPaperCard(
+        card=PaperCard(paper_id="p2", methods=["SR-CNN"], metrics=["SSIM"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+
+    corpus = ScopedCorpusResult(
+        cards=(card1, card2),
+        papers=(p1, p2),
+        corpus_paper_ids=("p1", "p2"),
+        missing_cards_paper_ids=(),
+        total_matching_papers=2,
+    )
+
+    miner = EvaluationGapMiner()
+    candidates = miner.mine_evaluation_gaps("Super Resolution", corpus)
+
+    # All unknown => insufficient evidence, no candidate!
+    assert len(candidates) == 0
+
+
 @pytest.mark.asyncio
 async def test_gap_service_supports_evaluation_type(tmp_path_factory: object) -> None:
     db_file = tmp_path_factory.mktemp("db") / "test_eval.db"  # type: ignore[attr-defined]
@@ -135,10 +148,15 @@ async def test_gap_service_supports_evaluation_type(tmp_path_factory: object) ->
     id2 = repo.upsert_merged_paper(p2)
 
     card1 = PaperCard(
-        paper_id=id1, problem="Super Resolution", methods=["SR-CNN"], metrics=["PSNR"]
+        paper_id=id1,
+        problem="Super Resolution",
+        methods=["SR-CNN"],
+        evaluation_conditions=[
+            StructuredEvidence(value="scanner shift", status="explicitly_absent")
+        ],
     )
     card2 = PaperCard(
-        paper_id=id2, problem="Super Resolution", methods=["SR-CNN"], metrics=["SSIM"]
+        paper_id=id2, problem="Super Resolution", methods=["SR-CNN"]
     )
 
     repo.upsert_paper_card(card1)
@@ -170,12 +188,22 @@ def test_evaluation_gap_attributable_evidence_refs_do_not_fabricate_text() -> No
     )
 
     card1 = StoredPaperCard(
-        card=PaperCard(paper_id="p1", methods=["U-Net"], metrics=["Dice"]),
+        card=PaperCard(
+            paper_id="p1",
+            methods=["U-Net"],
+            evaluation_conditions=[
+                StructuredEvidence(
+                    value="noise robustness",
+                    status="explicitly_absent",
+                    supporting_text="Noise robustness was not evaluated.",
+                )
+            ],
+        ),
         source_url=None, document_sha256=None, selected_sections=(),
         llm_provider=None, llm_model=None, created_at=now, updated_at=now,
     )
     card2 = StoredPaperCard(
-        card=PaperCard(paper_id="p2", methods=["U-Net"], metrics=["IOU"]),
+        card=PaperCard(paper_id="p2", methods=["U-Net"]),
         source_url=None, document_sha256=None, selected_sections=(),
         llm_provider=None, llm_model=None, created_at=now, updated_at=now,
     )
@@ -194,4 +222,3 @@ def test_evaluation_gap_attributable_evidence_refs_do_not_fabricate_text() -> No
     for cand in candidates:
         for ref in cand.provenance.supporting_evidence:
             assert "evaluated without" not in ref.supporting_text.lower()
-            assert "u-net" in ref.supporting_text.lower()

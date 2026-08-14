@@ -11,6 +11,7 @@ from research_radar.gap.miner import (
     generate_gap_id,
 )
 from research_radar.models.gap import CandidateGap, EvidenceRef, GapProvenance
+from research_radar.models.paper_card import StructuredEvidence
 from research_radar.storage.repositories import ScopedCorpusResult
 
 
@@ -39,7 +40,7 @@ class EvaluationGapMiner:
     def mine_evaluation_gaps(
         self, topic: str, corpus: ScopedCorpusResult
     ) -> list[CandidateGap]:
-        """Identify evaluation conditions rarely or never evaluated in the scoped corpus."""
+        """Identify evaluation conditions with explicit unevaluated evidence in scoped corpus."""
 
         total_cards_count = len(corpus.cards)
         if total_cards_count < 2:
@@ -47,10 +48,9 @@ class EvaluationGapMiner:
 
         paper_title_map = {p.id: p.title for p in corpus.papers}
 
-        # Collect methods and evaluation conditions per card
+        # Collect methods and explicit evaluation_conditions per card
         methods_by_paper: dict[str, list[str]] = defaultdict(list)
-        eval_conditions_by_paper: dict[str, list[str]] = defaultdict(list)
-        cards_with_extracted_conditions: set[str] = set()
+        eval_conditions_by_paper: dict[str, dict[str, StructuredEvidence]] = defaultdict(dict)
 
         for stored_card in corpus.cards:
             card = stored_card.card
@@ -59,32 +59,18 @@ class EvaluationGapMiner:
             if card.methods:
                 methods_by_paper[pid].extend(card.methods)
 
-            # Check structured evaluation_conditions
-            if card.evaluation_conditions:
-                for item in card.evaluation_conditions:
-                    if item.status == "observed" and item.value.strip():
-                        eval_conditions_by_paper[pid].append(item.value.strip().lower())
-                        cards_with_extracted_conditions.add(pid)
-                    elif item.status in {"observed", "explicitly_absent"}:
-                        cards_with_extracted_conditions.add(pid)
-
-            # Also check attributable text in metrics, limitations, failure_cases
-            attributable_text = " ".join(
-                card.metrics + card.limitations + card.failure_cases
-            ).lower()
-
-            if attributable_text.strip():
-                cards_with_extracted_conditions.add(pid)
-
-            for cond in STANDARD_EVALUATION_CONDITIONS:
-                if cond in attributable_text:
-                    eval_conditions_by_paper[pid].append(cond)
-
-        # Check extraction coverage threshold (>= 50% of cards must have extracted condition data)
-        extraction_coverage = len(cards_with_extracted_conditions) / max(1, total_cards_count)
-        if extraction_coverage < 0.5:
-            # Unknown-heavy corpus: insufficient extraction coverage to infer evaluation gaps
-            return []
+            # PaperCard.evaluation_conditions is the sole source of truth
+            for item in card.evaluation_conditions:
+                if not item.value.strip():
+                    continue
+                val_clean = item.value.strip().lower()
+                matched_cond = None
+                for std_cond in STANDARD_EVALUATION_CONDITIONS:
+                    if std_cond in val_clean or val_clean in std_cond:
+                        matched_cond = std_cond
+                        break
+                cond_key = matched_cond or val_clean
+                eval_conditions_by_paper[pid][cond_key] = item
 
         # Count method paper frequencies
         method_counts: dict[str, set[str]] = defaultdict(set)
@@ -101,19 +87,29 @@ class EvaluationGapMiner:
             if len(pids) < 2:
                 continue
 
-            # Check which standard evaluation conditions are observed for this method family
-            observed_conditions: set[str] = set()
-            for pid in pids:
-                for cond_val in eval_conditions_by_paper[pid]:
-                    for std_cond in STANDARD_EVALUATION_CONDITIONS:
-                        if std_cond in cond_val or cond_val in std_cond:
-                            observed_conditions.add(std_cond)
-
             for cond in STANDARD_EVALUATION_CONDITIONS:
-                if cond in observed_conditions:
+                observed_pids: list[str] = []
+                explicitly_absent_pids: list[tuple[str, StructuredEvidence]] = []
+                unknown_pids: list[str] = []
+
+                for pid in pids:
+                    ev = eval_conditions_by_paper[pid].get(cond)
+                    if ev is None or ev.status == "unknown":
+                        unknown_pids.append(pid)
+                    elif ev.status == "observed":
+                        observed_pids.append(pid)
+                    elif ev.status == "explicitly_absent":
+                        explicitly_absent_pids.append((pid, ev))
+
+                # Rule 1: If condition was observed in ANY paper for this method => Not a gap
+                if observed_pids:
                     continue
 
-                # Target condition has 0 observed evidence for this method family!
+                # Rule 2: Candidate allowed ONLY when target condition has explicitly_absent
+                # evidence. If all papers are unknown => insufficient evidence, no candidate.
+                if not explicitly_absent_pids:
+                    continue
+
                 gap_id = generate_gap_id(
                     "evaluation", topic, f"{_slug(method)}-{_slug(cond)}"
                 )
@@ -123,8 +119,8 @@ class EvaluationGapMiner:
                 )
                 description = enforce_language_safety(
                     f"Within the retrieved corpus of {topic}, evaluation condition '{cond}' "
-                    f"was not observed for method family '{method}' across {len(pids)} "
-                    f"analyzed paper(s)."
+                    f"was explicitly unevaluated for method family '{method}' across "
+                    f"{len(pids)} analyzed paper(s)."
                 )
                 research_question = enforce_language_safety(
                     f"Within the retrieved corpus of {topic}, how does {method} perform "
@@ -132,17 +128,37 @@ class EvaluationGapMiner:
                 )
 
                 supporting_evidence: list[EvidenceRef] = []
-                for pid in sorted(pids)[:3]:
+                for pid, ev in explicitly_absent_pids[:3]:
                     paper_title = paper_title_map.get(pid, f"Paper {pid}")
+                    supp_text = (
+                        ev.supporting_text
+                        or f"Explicitly unevaluated under '{cond}' in {paper_title}"
+                    )
                     supporting_evidence.append(
                         EvidenceRef(
                             paper_id=pid,
                             paper_title=paper_title,
                             evidence_kind="supporting",
-                            claim_or_field="methods",
-                            supporting_text=f"Method '{method}' used in {paper_title}",
+                            claim_or_field="evaluation_conditions",
+                            source_section=ev.source_section,
+                            supporting_text=supp_text,
                         )
                     )
+
+                for pid in sorted(pids):
+                    if len(supporting_evidence) >= 3:
+                        break
+                    if pid not in [ref.paper_id for ref in supporting_evidence]:
+                        paper_title = paper_title_map.get(pid, f"Paper {pid}")
+                        supporting_evidence.append(
+                            EvidenceRef(
+                                paper_id=pid,
+                                paper_title=paper_title,
+                                evidence_kind="supporting",
+                                claim_or_field="methods",
+                                supporting_text=f"Method '{method}' used in {paper_title}",
+                            )
+                        )
 
                 provenance = GapProvenance(
                     retrievals=[],
@@ -158,8 +174,8 @@ class EvaluationGapMiner:
                 caveats = [
                     "This is a candidate research question, not a verified novelty claim.",
                     (
-                        f"Evaluation condition '{cond}' was not observed in the scoped "
-                        f"corpus for method '{method}'."
+                        f"Evaluation condition '{cond}' was explicitly noted as unobserved "
+                        f"in the scoped corpus for method '{method}'."
                     ),
                     (
                         f"Analysis is bounded by the retrieved corpus of "
