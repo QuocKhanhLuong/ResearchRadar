@@ -107,7 +107,8 @@ class CriticService:
 
         # 1. Title phrase
         clean_title = re.sub(
-            r"^(Repeated limitation in|Candidate gap in)\s*",
+            r"^(Repeated limitation in|Candidate gap in|"
+            r"Conflicting evidence on|Context-conditioned disagreement on)\s*",
             "",
             candidate.title,
             flags=re.IGNORECASE,
@@ -115,21 +116,27 @@ class CriticService:
         queries.append(clean_title.strip())
 
         # 2. Key terms from research question
-        stop_words = {"within", "retrieved", "corpus", "how", "can", "address", "methods"}
+        stop_words = {
+            "within", "retrieved", "corpus", "how", "can", "address",
+            "methods", "under", "which", "experimental", "conditions",
+            "does", "report", "opposing", "outcomes",
+        }
         rq_words = [
             w for w in re.findall(r"\b[a-zA-Z0-9]{3,}\b", candidate.research_question)
             if w.lower() not in stop_words
         ]
-        if rq_words:
-            queries.append(" ".join(rq_words[:4]))
 
-        # 3. Topic/limitation + review/benchmark
-        if rq_words:
-            queries.append(f"{' '.join(rq_words[:3])} benchmark review")
-
-        # 4. Competing terminology / solution search
-        if rq_words:
-            queries.append(f"{' '.join(rq_words[:2])} robustness solution")
+        if candidate.gap_type == "contradiction":
+            if rq_words:
+                concept_kw = " ".join(rq_words[:3])
+                queries.append(f"{concept_kw} improves")
+                queries.append(f"{concept_kw} degrades")
+                queries.append(f"{concept_kw} evaluation benchmark")
+        else:
+            if rq_words:
+                queries.append(" ".join(rq_words[:4]))
+                queries.append(f"{' '.join(rq_words[:3])} benchmark review")
+                queries.append(f"{' '.join(rq_words[:2])} robustness solution")
 
         # Deduplicate while preserving order, max 4 queries
         seen: set[str] = set()

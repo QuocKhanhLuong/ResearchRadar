@@ -130,10 +130,6 @@ class EvaluationGapMiner:
                 supporting_evidence: list[EvidenceRef] = []
                 for pid, ev in explicitly_absent_pids[:3]:
                     paper_title = paper_title_map.get(pid, f"Paper {pid}")
-                    supp_text = (
-                        ev.supporting_text
-                        or f"Explicitly unevaluated under '{cond}' in {paper_title}"
-                    )
                     supporting_evidence.append(
                         EvidenceRef(
                             paper_id=pid,
@@ -141,7 +137,7 @@ class EvaluationGapMiner:
                             evidence_kind="supporting",
                             claim_or_field="evaluation_conditions",
                             source_section=ev.source_section,
-                            supporting_text=supp_text,
+                            supporting_text=ev.supporting_text,
                         )
                     )
 

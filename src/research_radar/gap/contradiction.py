@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from research_radar.gap.miner import (
     _tokenize,
@@ -37,6 +39,33 @@ NEGATIVE_PATTERNS = (
 TASK_CATEGORIES = {"reconstruction", "segmentation", "classification", "detection", "registration"}
 MODALITY_CATEGORIES = {"mri", "ct", "xray", "ultrasound", "pet", "spect"}
 
+ACCURACY_METRICS = {"dice", "hd95", "iou", "psnr", "ssim", "mae", "rmse", "auc", "accuracy", "f1"}
+COMPUTATION_METRICS = {"latency", "fps", "flops", "memory", "runtime", "throughput", "time"}
+
+CONTRADICTION_GENERIC_TERMS = {
+    "model", "models", "performance", "results", "result", "method", "methods",
+    "paper", "papers", "approach", "approaches", "study", "studies", "data",
+    "analysis", "evaluation", "evaluations", "system", "systems", "proposed",
+    "algorithm", "algorithms", "technique", "techniques", "experiment",
+    "experiments", "accuracy", "score", "scores", "using", "used", "based",
+    "show", "shows", "shown", "table", "figure", "fig", "section", "compare",
+    "compared", "findings", "finding", "work", "works", "test", "testing",
+    "tested", "value", "values", "high", "low", "new", "our", "their", "baseline",
+    "reported", "observed", "evaluated", "quality", "effect", "effects",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ContextCompatibilityResult:
+    """Structured compatibility assessment between two PaperCards."""
+
+    status: Literal["compatible", "partially_compatible", "incompatible"]
+    score: float
+    rationale: str
+    is_different_metric: bool = False
+    is_different_condition: bool = False
+    is_different_dataset: bool = False
+
 
 def _detect_claim_polarity(claim_text: str) -> str:
     """Classify claim polarity as 'positive', 'negative', or 'neutral'."""
@@ -52,13 +81,12 @@ def _detect_claim_polarity(claim_text: str) -> str:
     return "neutral"
 
 
-def calculate_context_compatibility(card_a: PaperCard, card_b: PaperCard) -> float:
-    """Calculate context compatibility score between two PaperCards (0.0 to 1.0).
+def assess_context_compatibility(
+    card_a: PaperCard, card_b: PaperCard
+) -> ContextCompatibilityResult:
+    """Assess context compatibility across task, modality, metric, condition, and dataset."""
 
-    Returns 0.0 for hard context incompatibilities (e.g. task/modality mismatch).
-    """
-
-    # 1. Task check
+    # 1. Task check (hard mismatch check)
     tasks_a = {t.value.lower() for t in card_a.tasks if t.status == "observed"}
     if card_a.problem:
         tasks_a.add(card_a.problem.lower())
@@ -71,9 +99,13 @@ def calculate_context_compatibility(card_a: PaperCard, card_b: PaperCard) -> flo
     terms_b = set(re.findall(r"\b[a-zA-Z0-9]{2,}\b", " ".join(tasks_b))) & TASK_CATEGORIES
 
     if terms_a and terms_b and not (terms_a & terms_b):
-        return 0.0  # Hard task mismatch
+        return ContextCompatibilityResult(
+            status="incompatible",
+            score=0.0,
+            rationale="Hard task mismatch (e.g. segmentation vs reconstruction).",
+        )
 
-    # 2. Modality check
+    # 2. Modality check (hard mismatch check)
     mods_a = {m.value.lower() for m in card_a.modalities if m.status == "observed"}
     mods_b = {m.value.lower() for m in card_b.modalities if m.status == "observed"}
 
@@ -81,18 +113,73 @@ def calculate_context_compatibility(card_a: PaperCard, card_b: PaperCard) -> flo
     m_terms_b = set(re.findall(r"\b[a-zA-Z0-9]{2,}\b", " ".join(mods_b))) & MODALITY_CATEGORIES
 
     if m_terms_a and m_terms_b and not (m_terms_a & m_terms_b):
-        return 0.0  # Hard modality mismatch
+        return ContextCompatibilityResult(
+            status="incompatible", score=0.0, rationale="Hard modality mismatch (e.g. MRI vs CT)."
+        )
 
-    # 3. Soft compatibility & missing context penalties
+    # 3. Metric / Measured Quantity check
+    metrics_a = {m.lower() for m in card_a.metrics}
+    metrics_b = {m.lower() for m in card_b.metrics}
+
+    has_acc_a = bool(metrics_a & ACCURACY_METRICS)
+    has_acc_b = bool(metrics_b & ACCURACY_METRICS)
+    has_comp_a = bool(metrics_a & COMPUTATION_METRICS)
+    has_comp_b = bool(metrics_b & COMPUTATION_METRICS)
+
+    if (has_acc_a and not has_comp_a and has_comp_b and not has_acc_b) or (
+        has_comp_a and not has_acc_a and has_acc_b and not has_comp_b
+    ):
+        return ContextCompatibilityResult(
+            status="incompatible",
+            score=0.0,
+            rationale="Metric mismatch: accuracy/quality metric vs latency/throughput metric.",
+            is_different_metric=True,
+        )
+
+    # 4. Evaluation condition & dataset checks
+    conds_a = {c.value.lower() for c in card_a.evaluation_conditions if c.status == "observed"}
+    conds_b = {c.value.lower() for c in card_b.evaluation_conditions if c.status == "observed"}
+
+    datasets_a = {d.lower() for d in card_a.datasets}
+    datasets_b = {d.lower() for d in card_b.datasets}
+
+    is_diff_cond = bool(conds_a and conds_b and not (conds_a & conds_b))
+    is_diff_ds = bool(datasets_a and datasets_b and not (datasets_a & datasets_b))
+
     score = 1.0
     if not tasks_a or not tasks_b:
         score -= 0.15
     if not mods_a or not mods_b:
         score -= 0.15
-    if not card_a.datasets or not card_b.datasets:
-        score -= 0.1
 
-    return max(0.2, round(score, 2))
+    if is_diff_cond or is_diff_ds:
+        score -= 0.2
+        return ContextCompatibilityResult(
+            status="partially_compatible",
+            score=max(0.4, round(score, 2)),
+            rationale="Differing evaluation conditions or datasets.",
+            is_different_condition=is_diff_cond,
+            is_different_dataset=is_diff_ds,
+        )
+
+    return ContextCompatibilityResult(
+        status="compatible",
+        score=max(0.6, round(score, 2)),
+        rationale="Compatible task, modality, and evaluation context.",
+    )
+
+
+def calculate_context_compatibility(card_a: PaperCard, card_b: PaperCard) -> float:
+    """Calculate compatibility score between two PaperCards (0.0 to 1.0)."""
+
+    return assess_context_compatibility(card_a, card_b).score
+
+
+def _extract_domain_tokens(text: str) -> set[str]:
+    """Tokenize text and remove both standard stopwords and contradiction generic terms."""
+
+    tokens = _tokenize(text)
+    return {t for t in tokens if t not in CONTRADICTION_GENERIC_TERMS and len(t) >= 3}
 
 
 class ContradictionGapMiner:
@@ -122,8 +209,8 @@ class ContradictionGapMiner:
                 if card_a.paper_id == card_b.paper_id:
                     continue
 
-                comp_score = calculate_context_compatibility(card_a, card_b)
-                if comp_score < 0.5:
+                compatibility = assess_context_compatibility(card_a, card_b)
+                if compatibility.status == "incompatible" or compatibility.score < 0.4:
                     continue
 
                 claims_a: list[tuple[str, str | None, str | None]] = []
@@ -143,18 +230,18 @@ class ContradictionGapMiner:
                     if pol_a == "neutral":
                         continue
 
-                    tokens_a = _tokenize(text_a)
+                    tokens_a = _extract_domain_tokens(text_a)
 
                     for text_b, sec_b, supp_b in claims_b:
                         pol_b = _detect_claim_polarity(text_b)
                         if pol_b == "neutral" or pol_a == pol_b:
                             continue  # Must be opposite polarity!
 
-                        tokens_b = _tokenize(text_b)
+                        tokens_b = _extract_domain_tokens(text_b)
                         overlap_tokens = tokens_a & tokens_b
 
-                        # Must share core research concepts (at least 2 non-stopwords)
-                        if len(overlap_tokens) < 2:
+                        # Must share core domain concepts (at least 1 specific non-generic term)
+                        if len(overlap_tokens) < 1:
                             continue
 
                         concept_phrase = " ".join(sorted(overlap_tokens)[:3])
@@ -165,23 +252,43 @@ class ContradictionGapMiner:
                             continue
                         seen_pairs.add(pair_key)
 
+                        is_context_conditioned = (
+                            compatibility.status == "partially_compatible"
+                            or compatibility.is_different_condition
+                            or compatibility.is_different_dataset
+                        )
+
                         gap_id = generate_gap_id(
                             "contradiction",
                             topic,
                             f"{_slug(concept_phrase)}-{_slug(card_a.paper_id)}-{_slug(card_b.paper_id)}",
                         )
 
-                        title = enforce_language_safety(
-                            f"Conflicting evidence on {concept_phrase} in {topic}"
-                        )
+                        if is_context_conditioned:
+                            title = enforce_language_safety(
+                                f"Context-conditioned disagreement on {concept_phrase} in {topic}"
+                            )
+                            rq_text = (
+                                f"Within the retrieved corpus of {topic}, under which experimental "
+                                f"conditions (e.g., across datasets or evaluation settings) does "
+                                f"{concept_phrase} improve or degrade performance?"
+                            )
+                            research_question = enforce_language_safety(rq_text)
+                        else:
+                            title = enforce_language_safety(
+                                f"Conflicting evidence on {concept_phrase} in {topic}"
+                            )
+                            rq_text = (
+                                f"Within the retrieved corpus of {topic}, why do paper "
+                                f"'{card_a.paper_id}' and paper '{card_b.paper_id}' report "
+                                f"opposing outcomes for {concept_phrase} under similar conditions?"
+                            )
+                            research_question = enforce_language_safety(rq_text)
+
                         description = enforce_language_safety(
                             f"Within the retrieved corpus of {topic}, paper '{card_a.paper_id}' "
                             f"and paper '{card_b.paper_id}' report contradictory findings "
                             f"regarding '{concept_phrase}' under similar reported conditions."
-                        )
-                        research_question = enforce_language_safety(
-                            f"Within the retrieved corpus of {topic}, under which conditions does "
-                            f"{concept_phrase} improve or degrade performance?"
                         )
 
                         title_a = paper_title_map.get(card_a.paper_id, f"Paper {card_a.paper_id}")
@@ -204,11 +311,17 @@ class ContradictionGapMiner:
                             supporting_text=supp_b or text_b,
                         )
 
+                        kind_str = (
+                            "context_conditioned_disagreement"
+                            if is_context_conditioned
+                            else "direct_contradiction"
+                        )
                         provenance = GapProvenance(
                             retrievals=[],
                             corpus_paper_ids=list(corpus.corpus_paper_ids),
                             corpus_description=(
-                                f"Contradiction analysis for '{topic}' across {len(cards)} cards"
+                                f"Contradiction [{kind_str}] for '{topic}' across "
+                                f"{len(cards)} cards"
                             ),
                             supporting_evidence=[ref_a],
                             conflicting_evidence=[ref_b],
@@ -218,19 +331,21 @@ class ContradictionGapMiner:
                             "This is a candidate research question, not a verified novelty claim.",
                             (
                                 "Within the retrieved corpus, these findings appear inconsistent "
-                                "under similar reported conditions."
-                            ),
-                            (
-                                "These results may reflect differences in datasets or "
-                                "evaluation protocols."
-                            ),
-                            (
-                                f"Analysis is bounded by the retrieved corpus of "
-                                f"{len(corpus.corpus_paper_ids)} stored papers."
+                                "under reported conditions."
                             ),
                         ]
+                        if is_context_conditioned:
+                            caveats.append(
+                                "This represents a context-conditioned disagreement (e.g. "
+                                "differing datasets or evaluation settings) rather than a "
+                                "direct protocol contradiction."
+                            )
+                        caveats.append(
+                            f"Analysis is bounded by the retrieved corpus of "
+                            f"{len(corpus.corpus_paper_ids)} stored papers."
+                        )
 
-                        confidence = round(min(0.8, comp_score * 0.7), 2)
+                        confidence = round(min(0.85, compatibility.score * 0.75), 2)
 
                         candidates.append(
                             CandidateGap(

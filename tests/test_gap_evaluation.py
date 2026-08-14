@@ -221,4 +221,62 @@ def test_evaluation_gap_attributable_evidence_refs_do_not_fabricate_text() -> No
     assert len(candidates) >= 1
     for cand in candidates:
         for ref in cand.provenance.supporting_evidence:
-            assert "evaluated without" not in ref.supporting_text.lower()
+            if ref.claim_or_field == "evaluation_conditions":
+                assert ref.supporting_text == "Noise robustness was not evaluated."
+
+
+def test_evaluation_gap_does_not_fabricate_supporting_text_when_none() -> None:
+    now = _utc_now()
+    p1 = StoredPaper(
+        id="p1", canonical_key="k1", title="Model A", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+    p2 = StoredPaper(
+        id="p2", canonical_key="k2", title="Model B", abstract=None, authors=[],
+        publication_year=2024, venue=None, doi=None, url=None, citation_count=0,
+        primary_source="arxiv", sources=(), first_discovered_at=now, created_at=now, updated_at=now,
+    )
+
+    card1 = StoredPaperCard(
+        card=PaperCard(
+            paper_id="p1",
+            methods=["U-Net"],
+            evaluation_conditions=[
+                StructuredEvidence(
+                    value="noise robustness",
+                    status="explicitly_absent",
+                    source_section="Limitations",
+                    supporting_text=None,  # No supporting text extracted!
+                )
+            ],
+        ),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+    card2 = StoredPaperCard(
+        card=PaperCard(paper_id="p2", methods=["U-Net"]),
+        source_url=None, document_sha256=None, selected_sections=(),
+        llm_provider=None, llm_model=None, created_at=now, updated_at=now,
+    )
+
+    corpus = ScopedCorpusResult(
+        cards=(card1, card2),
+        papers=(p1, p2),
+        corpus_paper_ids=("p1", "p2"),
+        missing_cards_paper_ids=(),
+        total_matching_papers=2,
+    )
+    miner = EvaluationGapMiner()
+    candidates = miner.mine_evaluation_gaps("Segmentation", corpus)
+
+    assert len(candidates) >= 1
+    eval_refs = [
+        ref
+        for ref in candidates[0].provenance.supporting_evidence
+        if ref.claim_or_field == "evaluation_conditions"
+    ]
+    assert len(eval_refs) == 1
+    assert eval_refs[0].supporting_text is None
+    assert eval_refs[0].source_section == "Limitations"
+

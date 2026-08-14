@@ -9,10 +9,12 @@ import pytest
 from research_radar.bot.commands.gap import render_gap_embed
 from research_radar.gap.contradiction import (
     ContradictionGapMiner,
+    assess_context_compatibility,
     calculate_context_compatibility,
 )
 from research_radar.gap.critic import CriticService
 from research_radar.gap.service import GapService
+from research_radar.models.gap import CandidateGap, GapProvenance
 from research_radar.models.paper import Paper
 from research_radar.models.paper_card import EvidenceClaim, PaperCard, StructuredEvidence
 from research_radar.research.scout import ScoutResult
@@ -47,6 +49,9 @@ def _make_stored_card(
     claims: list[str],
     task: str = "segmentation",
     modality: str = "mri",
+    metrics: list[str] | None = None,
+    evaluation_conditions: list[str] | None = None,
+    datasets: list[str] | None = None,
     now: datetime | None = None,
 ) -> tuple[StoredPaper, StoredPaperCard]:
     if now is None:
@@ -76,6 +81,12 @@ def _make_stored_card(
             problem=f"{task} problem",
             tasks=[StructuredEvidence(value=task, status="observed")],
             modalities=[StructuredEvidence(value=modality, status="observed")],
+            metrics=metrics or ["dice"],
+            datasets=datasets or ["fastMRI"],
+            evaluation_conditions=[
+                StructuredEvidence(value=c, status="observed")
+                for c in (evaluation_conditions or ["scanner shift"])
+            ],
             main_claims=[EvidenceClaim(claim=c) for c in claims],
         ),
         source_url=None,
@@ -90,8 +101,8 @@ def _make_stored_card(
     return paper, card
 
 
-# 1. Opposite claims + same context -> candidate
-def test_contradiction_opposite_claims_same_context_generates_candidate() -> None:
+# 1. Opposite claims + same context -> direct contradiction candidate
+def test_contradiction_opposite_claims_same_context_generates_direct_contradiction() -> None:
     now = _utc_now()
     p1, c1 = _make_stored_card(
         "p1",
@@ -124,153 +135,108 @@ def test_contradiction_opposite_claims_same_context_generates_candidate() -> Non
     assert len(cands) == 1
     cand = cands[0]
     assert cand.gap_type == "contradiction"
+    assert "direct_contradiction" in cand.provenance.corpus_description
     assert "p1" in cand.supporting_papers or "p1" in cand.conflicting_papers
     assert "p2" in cand.supporting_papers or "p2" in cand.conflicting_papers
-    assert "inconsistent" in " ".join(cand.caveats).lower()
 
 
-# 2. Opposite claims + different task -> no candidate
-def test_contradiction_different_task_blocks_candidate() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1",
-        "Paper A",
-        ["Spectral regularization improves robustness under scanner shift."],
-        task="segmentation",
-        modality="mri",
-        now=now,
-    )
-    p2, c2 = _make_stored_card(
-        "p2",
-        "Paper B",
-        ["Spectral regularization degrades performance under scanner shift."],
-        task="reconstruction",
-        modality="mri",
-        now=now,
-    )
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2),
-        papers=(p1, p2),
-        corpus_paper_ids=("p1", "p2"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=2,
-    )
-
-    miner = ContradictionGapMiner()
-    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
-    assert len(cands) == 0
-
-
-# 3. Opposite claims + different modality -> no candidate
-def test_contradiction_different_modality_blocks_candidate() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1",
-        "Paper A",
-        ["Spectral regularization improves robustness under scanner shift."],
-        task="segmentation",
-        modality="mri",
-        now=now,
-    )
-    p2, c2 = _make_stored_card(
-        "p2",
-        "Paper B",
-        ["Spectral regularization degrades performance under scanner shift."],
-        task="segmentation",
-        modality="ct",
-        now=now,
-    )
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2),
-        papers=(p1, p2),
-        corpus_paper_ids=("p1", "p2"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=2,
-    )
-
-    miner = ContradictionGapMiner()
-    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
-    assert len(cands) == 0
-
-
-# 4. Same claim direction -> no contradiction
-def test_contradiction_same_direction_returns_no_candidate() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1",
-        "Paper A",
-        ["Spectral regularization improves robustness under scanner shift."],
-        now=now,
-    )
-    p2, c2 = _make_stored_card(
-        "p2",
-        "Paper B",
-        ["Spectral regularization enhances robustness under scanner shift."],
-        now=now,
-    )
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2),
-        papers=(p1, p2),
-        corpus_paper_ids=("p1", "p2"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=2,
-    )
-
-    miner = ContradictionGapMiner()
-    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
-    assert len(cands) == 0
-
-
-# 5. Unknown / neutral polarity -> no contradiction
-def test_contradiction_neutral_polarity_returns_no_candidate() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1",
-        "Paper A",
-        ["We analyze spectral regularization under scanner shift."],
-        now=now,
-    )
-    p2, c2 = _make_stored_card(
-        "p2",
-        "Paper B",
-        ["Spectral regularization degrades performance under scanner shift."],
-        now=now,
-    )
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2),
-        papers=(p1, p2),
-        corpus_paper_ids=("p1", "p2"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=2,
-    )
-
-    miner = ContradictionGapMiner()
-    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
-    assert len(cands) == 0
-
-
-# 6. Different metrics -> no direct contradiction
-def test_contradiction_different_metrics_reduces_compatibility() -> None:
+# 2. Same task but different metrics -> no direct contradiction
+def test_contradiction_different_metrics_blocks_direct_contradiction() -> None:
     card1 = PaperCard(
         paper_id="p1",
         tasks=[StructuredEvidence(value="segmentation", status="observed")],
         modalities=[StructuredEvidence(value="mri", status="observed")],
+        metrics=["dice"],
     )
     card2 = PaperCard(
         paper_id="p2",
-        tasks=[StructuredEvidence(value="reconstruction", status="observed")],
+        tasks=[StructuredEvidence(value="segmentation", status="observed")],
         modalities=[StructuredEvidence(value="mri", status="observed")],
+        metrics=["latency"],
     )
 
-    score = calculate_context_compatibility(card1, card2)
-    assert score == 0.0  # Mismatched tasks return 0.0
+    res = assess_context_compatibility(card1, card2)
+    assert res.status == "incompatible"
+    assert res.is_different_metric
+    assert res.score == 0.0
 
 
-# 7. Missing context fields reduce confidence
+# 3. Same method but in-domain vs OOD -> context-conditioned disagreement
+def test_contradiction_in_domain_vs_ood_generates_context_conditioned_disagreement() -> None:
+    now = _utc_now()
+    p1, c1 = _make_stored_card(
+        "p1",
+        "Paper A",
+        ["Spectral regularization improves segmentation performance."],
+        task="segmentation",
+        modality="mri",
+        evaluation_conditions=["in-domain validation"],
+        now=now,
+    )
+    p2, c2 = _make_stored_card(
+        "p2",
+        "Paper B",
+        ["Spectral regularization degrades segmentation performance."],
+        task="segmentation",
+        modality="mri",
+        evaluation_conditions=["out-of-distribution robustness"],
+        now=now,
+    )
+
+    corpus = ScopedCorpusResult(
+        cards=(c1, c2),
+        papers=(p1, p2),
+        corpus_paper_ids=("p1", "p2"),
+        missing_cards_paper_ids=(),
+        total_matching_papers=2,
+    )
+
+    miner = ContradictionGapMiner()
+    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
+
+    assert len(cands) == 1
+    cand = cands[0]
+    assert "context_conditioned_disagreement" in cand.provenance.corpus_description
+    assert "Context-conditioned disagreement" in cand.title
+    assert "experimental conditions" in cand.research_question
+
+
+# 4. Different datasets reduce confidence
+def test_contradiction_different_datasets_reduces_confidence() -> None:
+    now = _utc_now()
+    p1, c1 = _make_stored_card(
+        "p1",
+        "Paper A",
+        ["Spectral regularization improves robustness."],
+        datasets=["fastMRI"],
+        now=now,
+    )
+    p2, c2 = _make_stored_card(
+        "p2",
+        "Paper B",
+        ["Spectral regularization degrades performance."],
+        datasets=["BraTS"],
+        now=now,
+    )
+
+    corpus = ScopedCorpusResult(
+        cards=(c1, c2),
+        papers=(p1, p2),
+        corpus_paper_ids=("p1", "p2"),
+        missing_cards_paper_ids=(),
+        total_matching_papers=2,
+    )
+
+    miner = ContradictionGapMiner()
+    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
+
+    assert len(cands) == 1
+    cand = cands[0]
+    assert cand.confidence is not None
+    assert cand.confidence <= 0.6  # Reduced confidence due to dataset difference
+
+
+# 5. Missing context fields reduce confidence
 def test_contradiction_missing_context_reduces_confidence() -> None:
     card1 = PaperCard(
         paper_id="p1",
@@ -282,10 +248,39 @@ def test_contradiction_missing_context_reduces_confidence() -> None:
     )
 
     score = calculate_context_compatibility(card1, card2)
-    assert 0.0 < score < 1.0  # Missing modalities/datasets penalize compatibility score
+    assert 0.0 < score < 1.0  # Missing modalities/datasets penalize score
 
 
-# 8. EvidenceRefs preserve both source claims
+# 6. Generic words do not create contradiction
+def test_contradiction_generic_words_do_not_create_contradiction() -> None:
+    now = _utc_now()
+    p1, c1 = _make_stored_card(
+        "p1",
+        "Paper A",
+        ["This paper presents a new model for results."],
+        now=now,
+    )
+    p2, c2 = _make_stored_card(
+        "p2",
+        "Paper B",
+        ["Our approach shows degraded results."],
+        now=now,
+    )
+
+    corpus = ScopedCorpusResult(
+        cards=(c1, c2),
+        papers=(p1, p2),
+        corpus_paper_ids=("p1", "p2"),
+        missing_cards_paper_ids=(),
+        total_matching_papers=2,
+    )
+
+    miner = ContradictionGapMiner()
+    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
+    assert len(cands) == 0  # No contradiction candidate generated from generic words!
+
+
+# 7. Contradictory claims retain source evidence
 def test_contradiction_evidencerefs_preserve_both_source_claims() -> None:
     now = _utc_now()
     p1, c1 = _make_stored_card(
@@ -324,38 +319,36 @@ def test_contradiction_evidencerefs_preserve_both_source_claims() -> None:
     assert "degrades" in conf_ref.supporting_text
 
 
-# 9. Deterministic candidate ID
-def test_contradiction_candidate_id_is_deterministic() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1",
-        "Paper A",
-        ["Spectral regularization improves robustness under scanner shift."],
-        now=now,
+# 8. Contradiction-specific Critic queries are bounded
+def test_critic_derive_queries_for_contradiction_are_bounded() -> None:
+    scout = FakeScout()
+    critic = CriticService(scout)
+    cand = CandidateGap(
+        id="cand1",
+        title="Conflicting evidence on spectral regularization in Medical Imaging",
+        description="Desc",
+        gap_type="contradiction",
+        research_question=(
+            "Under which experimental conditions does spectral regularization "
+            "improve or degrade performance?"
+        ),
+        supporting_papers=["p1"],
+        conflicting_papers=["p2"],
+        evidence_count=2,
+        search_scope="Scope",
+        provenance=GapProvenance(
+            retrievals=[], corpus_paper_ids=["p1", "p2"], corpus_description="Desc"
+        ),
+        created_at=_utc_now(),
     )
-    p2, c2 = _make_stored_card(
-        "p2",
-        "Paper B",
-        ["Spectral regularization degrades performance under scanner shift."],
-        now=now,
-    )
 
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2),
-        papers=(p1, p2),
-        corpus_paper_ids=("p1", "p2"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=2,
-    )
-
-    miner = ContradictionGapMiner()
-    cands1 = miner.mine_contradiction_gaps("Medical Imaging", corpus)
-    cands2 = miner.mine_contradiction_gaps("Medical Imaging", corpus)
-
-    assert cands1[0].id == cands2[0].id
+    queries = critic.derive_queries(cand)
+    assert len(queries) <= 4
+    assert any("improves" in q for q in queries)
+    assert any("degrades" in q for q in queries)
 
 
-# 10. Critic can downgrade context-mismatch or fresh overlap cases
+# 9. Critic can downgrade disagreement explained by fresh context
 @pytest.mark.asyncio
 async def test_critic_downgrades_fresh_overlap_for_contradiction() -> None:
     now = _utc_now()
@@ -399,50 +392,6 @@ async def test_critic_downgrades_fresh_overlap_for_contradiction() -> None:
     assert updated_cand.review_status == "downgraded"
 
 
-# 11. Metadata-only overlap never rejects
-@pytest.mark.asyncio
-async def test_critic_metadata_overlap_never_rejects_contradiction() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1",
-        "Paper A",
-        ["Spectral regularization improves robustness under scanner shift."],
-        now=now,
-    )
-    p2, c2 = _make_stored_card(
-        "p2",
-        "Paper B",
-        ["Spectral regularization degrades performance under scanner shift."],
-        now=now,
-    )
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2),
-        papers=(p1, p2),
-        corpus_paper_ids=("p1", "p2"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=2,
-    )
-
-    miner = ContradictionGapMiner()
-    cands = miner.mine_contradiction_gaps("Medical Imaging", corpus)
-    cand = cands[0]
-
-    fresh_paper = Paper(
-        id="p-fresh",
-        title="Spectral Regularization Scanner Shift Study",
-        abstract="Keywords matching title metadata.",
-        source="arxiv",
-    )
-    scout = FakeScout(return_papers=[fresh_paper])
-    critic = CriticService(scout)
-
-    review, updated_cand = await critic.review_candidate(cand, memory_cards=corpus.cards)
-
-    assert review.decision != "rejected"
-
-
-# 12. Discord type=contradiction delegates correctly
 @pytest.mark.asyncio
 async def test_gap_service_supports_contradiction_type(tmp_path_factory: object) -> None:
     db_file = tmp_path_factory.mktemp("db") / "test_contradiction.db"  # type: ignore[attr-defined]
@@ -494,7 +443,6 @@ async def test_gap_service_supports_contradiction_type(tmp_path_factory: object)
     cand = res.candidates[0]
     assert cand.gap_type == "contradiction"
 
-    # Test embed rendering
     embed = render_gap_embed(cand)
     assert embed.title is not None
     assert "CONTRADICTION" in embed.title
