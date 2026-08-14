@@ -199,6 +199,10 @@ def test_contradiction_in_domain_vs_ood_generates_context_conditioned_disagreeme
     assert "context_conditioned_disagreement" in cand.provenance.corpus_description
     assert "Context-conditioned disagreement" in cand.title
     assert "experimental conditions" in cand.research_question
+    assert (
+        "observed opposing outcomes under differing reported datasets or evaluation conditions"
+        in cand.description
+    )
 
 
 # 4. Different datasets reduce confidence
@@ -411,9 +415,7 @@ async def test_gap_service_supports_contradiction_type(tmp_path_factory: object)
         tasks=[StructuredEvidence(value="segmentation", status="observed")],
         modalities=[StructuredEvidence(value="mri", status="observed")],
         main_claims=[
-            EvidenceClaim(
-                claim="Spectral regularization improves robustness under scanner shift."
-            )
+            EvidenceClaim(claim="Spectral regularization improves robustness under scanner shift.")
         ],
     )
     card2 = PaperCard(
@@ -422,9 +424,7 @@ async def test_gap_service_supports_contradiction_type(tmp_path_factory: object)
         tasks=[StructuredEvidence(value="segmentation", status="observed")],
         modalities=[StructuredEvidence(value="mri", status="observed")],
         main_claims=[
-            EvidenceClaim(
-                claim="Spectral regularization degrades performance under scanner shift."
-            )
+            EvidenceClaim(claim="Spectral regularization degrades performance under scanner shift.")
         ],
     )
 
@@ -434,9 +434,7 @@ async def test_gap_service_supports_contradiction_type(tmp_path_factory: object)
     fake_scout = FakeScout(return_papers=[])
     gap_service = GapService(repo, fake_scout)
 
-    res = await gap_service.analyze_gaps(
-        "Medical Imaging", count=1, gap_type="contradiction"
-    )
+    res = await gap_service.analyze_gaps("Medical Imaging", count=1, gap_type="contradiction")
 
     assert not res.is_insufficient_evidence
     assert len(res.candidates) == 1

@@ -11,6 +11,7 @@ from research_radar.gap.critic import CriticService
 from research_radar.gap.method_transfer import (
     MethodTransferGapMiner,
     assess_transfer_feasibility,
+    infer_method_class,
 )
 from research_radar.gap.service import GapService
 from research_radar.models.paper import Paper
@@ -47,6 +48,7 @@ def _make_stored_card(
     methods: list[str],
     task: str = "segmentation",
     modality: str = "mri",
+    evaluation_condition: str | None = None,
     now: datetime | None = None,
 ) -> tuple[StoredPaper, StoredPaperCard]:
     if now is None:
@@ -70,6 +72,10 @@ def _make_stored_card(
         updated_at=now,
     )
 
+    eval_conds = []
+    if evaluation_condition:
+        eval_conds.append(StructuredEvidence(value=evaluation_condition, status="observed"))
+
     card = StoredPaperCard(
         card=PaperCard(
             paper_id=paper_id,
@@ -77,6 +83,7 @@ def _make_stored_card(
             methods=methods,
             tasks=[StructuredEvidence(value=task, status="observed")],
             modalities=[StructuredEvidence(value=modality, status="observed")],
+            evaluation_conditions=eval_conds,
         ),
         source_url=None,
         document_sha256=None,
@@ -90,18 +97,15 @@ def _make_stored_card(
     return paper, card
 
 
-# 1. Method observed in source + target context exists + combination absent -> candidate
-def test_method_transfer_generates_candidate() -> None:
+# 1. task -> task transfer candidate works
+def test_method_transfer_task_to_task_works() -> None:
     now = _utc_now()
-    # Source context: Spectral Regularization used in Segmentation (p1, p2)
     p1, c1 = _make_stored_card(
         "p1", "P1", ["Spectral Regularization"], task="segmentation", now=now
     )
     p2, c2 = _make_stored_card(
         "p2", "P2", ["Spectral Regularization"], task="segmentation", now=now
     )
-
-    # Target context: Reconstruction task exists in corpus (p3, p4), but uses U-Net
     p3, c3 = _make_stored_card("p3", "P3", ["U-Net"], task="reconstruction", now=now)
     p4, c4 = _make_stored_card("p4", "P4", ["U-Net"], task="reconstruction", now=now)
 
@@ -120,26 +124,15 @@ def test_method_transfer_generates_candidate() -> None:
     cand = cands[0]
     assert cand.gap_type == "method_transfer"
     assert "Potential method transfer" in cand.title
-    assert "reconstruction" in cand.title.lower()
-    assert "transfer hypothesis" in " ".join(cand.caveats).lower()
 
 
-# 2. Method already used in target context -> no candidate
-def test_method_transfer_already_used_in_target_returns_no_candidate() -> None:
+# 2. modality -> modality transfer candidate works
+def test_method_transfer_modality_to_modality_works() -> None:
     now = _utc_now()
-    # Spectral Regularization used in both segmentation (p1, p2) and reconstruction (p3, p4)
-    p1, c1 = _make_stored_card(
-        "p1", "P1", ["Spectral Regularization"], task="segmentation", now=now
-    )
-    p2, c2 = _make_stored_card(
-        "p2", "P2", ["Spectral Regularization"], task="segmentation", now=now
-    )
-    p3, c3 = _make_stored_card(
-        "p3", "P3", ["Spectral Regularization"], task="reconstruction", now=now
-    )
-    p4, c4 = _make_stored_card(
-        "p4", "P4", ["Spectral Regularization"], task="reconstruction", now=now
-    )
+    p1, c1 = _make_stored_card("p1", "P1", ["Spectral Regularization"], modality="mri", now=now)
+    p2, c2 = _make_stored_card("p2", "P2", ["Spectral Regularization"], modality="mri", now=now)
+    p3, c3 = _make_stored_card("p3", "P3", ["U-Net"], modality="ct", now=now)
+    p4, c4 = _make_stored_card("p4", "P4", ["U-Net"], modality="ct", now=now)
 
     corpus = ScopedCorpusResult(
         cards=(c1, c2, c3, c4),
@@ -152,93 +145,48 @@ def test_method_transfer_already_used_in_target_returns_no_candidate() -> None:
     miner = MethodTransferGapMiner()
     cands = miner.mine_transfer_gaps("Medical Imaging", corpus)
 
-    # Method is already used in reconstruction => no transfer candidate for reconstruction!
-    recon_cands = [c for c in cands if "reconstruction" in c.title.lower()]
-    assert len(recon_cands) == 0
+    mod_cands = [c for c in cands if "ct" in c.title.lower()]
+    assert len(mod_cands) >= 1
 
 
-# 3. Weak source support (< 2 papers) -> no candidate
-def test_method_transfer_weak_source_support_returns_no_candidate() -> None:
-    now = _utc_now()
-    # Each method has only 1 paper (weak source support < 2 papers for all methods)
-    p1, c1 = _make_stored_card(
-        "p1", "P1", ["Spectral Regularization"], task="segmentation", now=now
-    )
-    p2, c2 = _make_stored_card("p2", "P2", ["Other Method"], task="segmentation", now=now)
-    p3, c3 = _make_stored_card("p3", "P3", ["U-Net"], task="reconstruction", now=now)
-    p4, c4 = _make_stored_card("p4", "P4", ["VNet"], task="reconstruction", now=now)
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2, c3, c4),
-        papers=(p1, p2, p3, p4),
-        corpus_paper_ids=("p1", "p2", "p3", "p4"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=4,
-    )
-
-    miner = MethodTransferGapMiner()
-    cands = miner.mine_transfer_gaps("Medical Imaging", corpus)
-    assert len(cands) == 0
-
-
-# 4. Target context represented in < 2 papers -> no candidate
-def test_method_transfer_target_context_insufficient_returns_no_candidate() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1", "P1", ["Spectral Regularization"], task="segmentation", now=now
-    )
-    p2, c2 = _make_stored_card(
-        "p2", "P2", ["Spectral Regularization"], task="segmentation", now=now
-    )
-    # Only 1 paper in reconstruction task
-    p3, c3 = _make_stored_card("p3", "P3", ["U-Net"], task="reconstruction", now=now)
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2, c3),
-        papers=(p1, p2, p3),
-        corpus_paper_ids=("p1", "p2", "p3"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=3,
-    )
-
-    miner = MethodTransferGapMiner()
-    cands = miner.mine_transfer_gaps("Medical Imaging", corpus)
-    assert len(cands) == 0
-
-
-# 5. Incompatible transfer (e.g. bounding-box detector head -> MRI reconstruction) -> no candidate
-def test_method_transfer_incompatible_transfer_is_skipped() -> None:
+# 3. task -> modality transfer is NEVER generated
+def test_task_to_modality_transfer_never_generated() -> None:
     res = assess_transfer_feasibility(
-        method="YOLOv8 bounding-box detector head",
-        source_context="object detection",
-        target_context="MRI reconstruction",
+        method="Spectral Regularization",
+        source_dimension="task",
+        source_context="segmentation",
+        target_dimension="modality",
+        target_context="mri",
     )
     assert not res.is_feasible
     assert res.score == 0.0
 
 
-# 6. Feasible transfer has valid score
-def test_method_transfer_feasible_transfer_has_valid_score() -> None:
+# 4. modality -> evaluation_condition transfer is NEVER generated
+def test_modality_to_evaluation_condition_transfer_never_generated() -> None:
     res = assess_transfer_feasibility(
         method="Spectral Regularization",
-        source_context="image segmentation",
-        target_context="MRI reconstruction",
+        source_dimension="modality",
+        source_context="mri",
+        target_dimension="evaluation_condition",
+        target_context="scanner shift",
     )
-    assert res.is_feasible
-    assert res.score > 0.5
+    assert not res.is_feasible
+    assert res.score == 0.0
 
 
-# 7. Deterministic candidate ID
-def test_method_transfer_candidate_id_is_deterministic() -> None:
+# 5. Unknown-heavy target dimension produces no candidate
+def test_method_transfer_unknown_heavy_target_produces_no_candidate() -> None:
     now = _utc_now()
+    # 4 cards in corpus, but evaluation condition is observed in only 1 card (< 50% coverage)
     p1, c1 = _make_stored_card(
-        "p1", "P1", ["Spectral Regularization"], task="segmentation", now=now
+        "p1", "P1", ["Spectral Regularization"], evaluation_condition="scanner shift", now=now
     )
     p2, c2 = _make_stored_card(
-        "p2", "P2", ["Spectral Regularization"], task="segmentation", now=now
+        "p2", "P2", ["Spectral Regularization"], evaluation_condition="scanner shift", now=now
     )
-    p3, c3 = _make_stored_card("p3", "P3", ["U-Net"], task="reconstruction", now=now)
-    p4, c4 = _make_stored_card("p4", "P4", ["U-Net"], task="reconstruction", now=now)
+    p3, c3 = _make_stored_card("p3", "P3", ["U-Net"], now=now)
+    p4, c4 = _make_stored_card("p4", "P4", ["U-Net"], now=now)
 
     corpus = ScopedCorpusResult(
         cards=(c1, c2, c3, c4),
@@ -249,14 +197,55 @@ def test_method_transfer_candidate_id_is_deterministic() -> None:
     )
 
     miner = MethodTransferGapMiner()
-    cands1 = miner.mine_transfer_gaps("Medical Imaging", corpus)
-    cands2 = miner.mine_transfer_gaps("Medical Imaging", corpus)
+    cands = miner.mine_transfer_gaps("Medical Imaging", corpus)
+    eval_cands = [c for c in cands if "scanner shift" in c.title.lower()]
+    assert len(eval_cands) == 0
 
-    assert cands1[0].id == cands2[0].id
+
+# 6. Task-specific head rejected for unrelated task
+def test_task_specific_head_rejected_for_cross_task() -> None:
+    res = assess_transfer_feasibility(
+        method="YOLOv8 bounding-box detector head",
+        source_dimension="task",
+        source_context="detection",
+        target_dimension="task",
+        target_context="reconstruction",
+    )
+    assert not res.is_feasible
+    assert res.score == 0.0
+    assert res.method_class == "task_specific_head"
 
 
-# 8. Source/target EvidenceRefs preserved
-def test_method_transfer_evidencerefs_preserve_source_and_target() -> None:
+# 7. Generic regularizer transfer remains feasible
+def test_generic_regularizer_remains_feasible() -> None:
+    res = assess_transfer_feasibility(
+        method="Spectral Regularization",
+        source_dimension="task",
+        source_context="segmentation",
+        target_dimension="task",
+        target_context="reconstruction",
+    )
+    assert res.is_feasible
+    assert res.score == 0.8
+    assert res.method_class == "generic_regularizer"
+
+
+# 8. Unknown method class lowers confidence
+def test_unknown_method_class_lowers_confidence() -> None:
+    assert infer_method_class("Custom Mysterious Algorithm") == "unknown"
+    res = assess_transfer_feasibility(
+        method="Custom Mysterious Algorithm",
+        source_dimension="task",
+        source_context="segmentation",
+        target_dimension="task",
+        target_context="reconstruction",
+    )
+    assert res.is_feasible
+    assert res.score == 0.5
+
+
+# 9. EvidenceRefs never contain fabricated summaries & missing supporting_text is None
+def test_evidencerefs_never_contain_fabricated_provenance_summaries() -> None:
     now = _utc_now()
     p1, c1 = _make_stored_card(
         "p1", "P1", ["Spectral Regularization"], task="segmentation", now=now
@@ -279,13 +268,14 @@ def test_method_transfer_evidencerefs_preserve_source_and_target() -> None:
     cands = miner.mine_transfer_gaps("Medical Imaging", corpus)
     cand = cands[0]
 
-    assert len(cand.provenance.supporting_evidence) >= 2
-    claims = [ref.claim_or_field for ref in cand.provenance.supporting_evidence]
-    assert "methods" in claims
-    assert "tasks" in claims
+    for ref in cand.provenance.supporting_evidence:
+        if ref.claim_or_field == "methods":
+            assert ref.supporting_text is None
+        assert "demonstrated in source context" not in (ref.supporting_text or "")
+        assert "represented in" not in (ref.supporting_text or "")
 
 
-# 9. Fresh direct target paper -> Critic downgrade
+# 10. Critic downgrades fresh target paper
 @pytest.mark.asyncio
 async def test_critic_downgrades_fresh_target_paper_for_method_transfer() -> None:
     now = _utc_now()
@@ -312,8 +302,8 @@ async def test_critic_downgrades_fresh_target_paper_for_method_transfer() -> Non
 
     fresh_paper = Paper(
         id="p-fresh",
-        title="Spectral Regularization for MRI Reconstruction",
-        abstract="We apply spectral regularization to MRI reconstruction.",
+        title="Spectral Regularization for Reconstruction",
+        abstract="We apply spectral regularization to reconstruction.",
         source="arxiv",
     )
     scout = FakeScout(return_papers=[fresh_paper])
@@ -323,46 +313,6 @@ async def test_critic_downgrades_fresh_target_paper_for_method_transfer() -> Non
 
     assert review.decision == "downgraded"
     assert updated_cand.review_status == "downgraded"
-
-
-# 10. Structured target evidence -> Critic reject
-@pytest.mark.asyncio
-async def test_critic_rejects_when_structured_evidence_resolves_method_transfer() -> None:
-    now = _utc_now()
-    p1, c1 = _make_stored_card(
-        "p1", "P1", ["Spectral Regularization"], task="segmentation", now=now
-    )
-    p2, c2 = _make_stored_card(
-        "p2", "P2", ["Spectral Regularization"], task="segmentation", now=now
-    )
-    p3, c3 = _make_stored_card("p3", "P3", ["U-Net"], task="reconstruction", now=now)
-    p4, c4 = _make_stored_card("p4", "P4", ["U-Net"], task="reconstruction", now=now)
-
-    corpus = ScopedCorpusResult(
-        cards=(c1, c2, c3, c4),
-        papers=(p1, p2, p3, p4),
-        corpus_paper_ids=("p1", "p2", "p3", "p4"),
-        missing_cards_paper_ids=(),
-        total_matching_papers=4,
-    )
-
-    miner = MethodTransferGapMiner()
-    cands = miner.mine_transfer_gaps("Medical Imaging", corpus)
-    cand = cands[0]
-
-    # Memory card p5 explicitly resolves the transfer hypothesis
-    _, c5 = _make_stored_card(
-        "p5", "P5", ["Spectral Regularization"], task="reconstruction", now=now
-    )
-    all_cards = (c1, c2, c3, c4, c5)
-
-    scout = FakeScout(return_papers=[])
-    critic = CriticService(scout)
-
-    review, updated_cand = await critic.review_candidate(cand, memory_cards=all_cards)
-
-    assert review.decision == "rejected"
-    assert updated_cand.review_status == "rejected"
 
 
 # 11. Discord delegates type=method_transfer

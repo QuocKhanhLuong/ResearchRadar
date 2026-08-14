@@ -285,11 +285,21 @@ class ContradictionGapMiner:
                             )
                             research_question = enforce_language_safety(rq_text)
 
-                        description = enforce_language_safety(
-                            f"Within the retrieved corpus of {topic}, paper '{card_a.paper_id}' "
-                            f"and paper '{card_b.paper_id}' report contradictory findings "
-                            f"regarding '{concept_phrase}' under similar reported conditions."
-                        )
+                        if is_context_conditioned:
+                            desc_text = (
+                                f"Within the retrieved corpus of {topic}, paper "
+                                f"'{card_a.paper_id}' and paper '{card_b.paper_id}' observed "
+                                f"opposing outcomes under differing reported datasets or "
+                                f"evaluation conditions."
+                            )
+                        else:
+                            desc_text = (
+                                f"Within the retrieved corpus of {topic}, paper "
+                                f"'{card_a.paper_id}' and paper '{card_b.paper_id}' report "
+                                f"contradictory findings regarding '{concept_phrase}' under "
+                                f"similar reported conditions."
+                            )
+                        description = enforce_language_safety(desc_text)
 
                         title_a = paper_title_map.get(card_a.paper_id, f"Paper {card_a.paper_id}")
                         title_b = paper_title_map.get(card_b.paper_id, f"Paper {card_b.paper_id}")
