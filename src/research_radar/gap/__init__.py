@@ -5,6 +5,7 @@ from research_radar.gap.corpus import ScopedCorpusService
 from research_radar.gap.coverage import CoverageGapMiner
 from research_radar.gap.critic import CriticService
 from research_radar.gap.evaluation import EvaluationGapMiner
+from research_radar.gap.method_transfer import MethodTransferGapMiner
 from research_radar.gap.miner import (
     ExplicitGapMiner,
     check_language_safety,
@@ -20,6 +21,7 @@ __all__ = [
     "ExplicitGapMiner",
     "GapAnalysisResult",
     "GapService",
+    "MethodTransferGapMiner",
     "ScopedCorpusService",
     "check_language_safety",
     "enforce_language_safety",

@@ -24,7 +24,9 @@ class GapCommandService(Protocol):
         self,
         topic: str,
         count: int = 1,
-        gap_type: Literal["explicit", "coverage", "evaluation", "contradiction"] = "explicit",
+        gap_type: Literal[
+            "explicit", "coverage", "evaluation", "contradiction", "method_transfer"
+        ] = "explicit",
     ) -> GapAnalysisResult: ...
 
     def get_candidate_detail(
@@ -103,9 +105,11 @@ def render_gap_embed(candidate: CandidateGap, review: CriticReview | None = None
     if candidate.provenance.supporting_evidence:
         papers_summary: list[str] = []
         for ref in candidate.provenance.supporting_evidence[:5]:
-            papers_summary.append(f"• **Claim A ({ref.paper_title})**: *\"{ref.supporting_text}\"*")
+            papers_summary.append(
+                f"• **{ref.paper_title}**: *\"{ref.supporting_text}\"*"
+            )
         embed.add_field(
-            name="Supporting Evidence (Claim A)",
+            name="Supporting Evidence",
             value="\n".join(papers_summary)[:1024],
             inline=False,
         )
@@ -117,12 +121,12 @@ def render_gap_embed(candidate: CandidateGap, review: CriticReview | None = None
                 f"• **Claim B ({ref.paper_title})**: *\"{ref.supporting_text}\"*"
             )
         embed.add_field(
-            name="Conflicting Evidence (Claim B)",
+            name="Conflicting Evidence",
             value="\n".join(conflict_summary)[:1024],
             inline=False,
         )
 
-    embed.set_footer(text=f"Candidate ID: {candidate.id} • ResearchRadar V2D")
+    embed.set_footer(text=f"Candidate ID: {candidate.id} • ResearchRadar V2E")
     return embed
 
 
@@ -136,7 +140,9 @@ def register_gap_commands(
         interaction: discord.Interaction,
         topic: str,
         count: int = 1,
-        type: Literal["explicit", "coverage", "evaluation", "contradiction"] = "explicit",
+        type: Literal[
+            "explicit", "coverage", "evaluation", "contradiction", "method_transfer"
+        ] = "explicit",
     ) -> None:
         await interaction.response.defer(thinking=True)
         try:

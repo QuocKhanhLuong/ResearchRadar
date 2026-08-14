@@ -10,6 +10,7 @@ from research_radar.gap.corpus import ScopedCorpusService
 from research_radar.gap.coverage import CoverageGapMiner
 from research_radar.gap.critic import CriticService, ScoutSearchProtocol
 from research_radar.gap.evaluation import EvaluationGapMiner
+from research_radar.gap.method_transfer import MethodTransferGapMiner
 from research_radar.gap.miner import ExplicitGapMiner
 from research_radar.models.gap import CandidateGap, CriticReview
 from research_radar.storage.repositories import ScopedCorpusResult
@@ -60,6 +61,7 @@ class GapService:
         coverage_miner: CoverageGapMiner | None = None,
         evaluation_miner: EvaluationGapMiner | None = None,
         contradiction_miner: ContradictionGapMiner | None = None,
+        method_transfer_miner: MethodTransferGapMiner | None = None,
         critic: CriticService | None = None,
     ) -> None:
         self._repository = repository
@@ -69,13 +71,16 @@ class GapService:
         self._coverage_miner = coverage_miner or CoverageGapMiner()
         self._evaluation_miner = evaluation_miner or EvaluationGapMiner()
         self._contradiction_miner = contradiction_miner or ContradictionGapMiner()
+        self._method_transfer_miner = method_transfer_miner or MethodTransferGapMiner()
         self._critic = critic or CriticService(scout)
 
     async def analyze_gaps(
         self,
         topic: str,
         count: int = 1,
-        gap_type: Literal["explicit", "coverage", "evaluation", "contradiction"] = "explicit",
+        gap_type: Literal[
+            "explicit", "coverage", "evaluation", "contradiction", "method_transfer"
+        ] = "explicit",
     ) -> GapAnalysisResult:
         """Run the end-to-end gap pipeline for the requested gap type."""
 
@@ -119,6 +124,10 @@ class GapService:
             mined_candidates = self._evaluation_miner.mine_evaluation_gaps(clean_topic, corpus)
         elif gap_type == "contradiction":
             mined_candidates = self._contradiction_miner.mine_contradiction_gaps(
+                clean_topic, corpus
+            )
+        elif gap_type == "method_transfer":
+            mined_candidates = self._method_transfer_miner.mine_transfer_gaps(
                 clean_topic, corpus
             )
         else:

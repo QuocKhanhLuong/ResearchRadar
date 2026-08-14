@@ -69,6 +69,24 @@ def _check_context_compatibility_and_rejection(
         return False, None
 
     # Check for direct resolution in main_claims, contributions, methods
+    if candidate.gap_type == "method_transfer":
+        card_m_text = " ".join(card.methods).lower()
+        method_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", card_m_text))
+        has_context_overlap = bool(
+            cand_task_terms & card_task_terms or cand_mod_terms & card_mod_terms
+        )
+        if method_words and (candidate_keywords & method_words) and has_context_overlap:
+            m_str = ", ".join(card.methods)
+            return True, EvidenceRef(
+                paper_id=card.paper_id,
+                paper_title=paper_title,
+                evidence_kind="conflicting",
+                claim_or_field="methods",
+                supporting_text=(
+                    f"Method '{m_str}' is already applied in target context in {paper_title}"
+                ),
+            )
+
     for claim in card.main_claims:
         claim_words = set(re.findall(r"\b[a-zA-Z0-9]{3,}\b", claim.claim.lower()))
         if len(candidate_keywords & claim_words) >= 3:
@@ -132,6 +150,12 @@ class CriticService:
                 queries.append(f"{concept_kw} improves")
                 queries.append(f"{concept_kw} degrades")
                 queries.append(f"{concept_kw} evaluation benchmark")
+        elif candidate.gap_type == "method_transfer":
+            if rq_words:
+                method_target = " ".join(rq_words[:3])
+                queries.append(f"{method_target}")
+                queries.append(f"{method_target} evaluation")
+                queries.append(f"{method_target} benchmark")
         else:
             if rq_words:
                 queries.append(" ".join(rq_words[:4]))
