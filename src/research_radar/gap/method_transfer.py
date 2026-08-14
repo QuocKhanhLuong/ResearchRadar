@@ -442,23 +442,31 @@ class MethodTransferGapMiner:
                         )
                         research_question = enforce_language_safety(rq_text)
 
-                        # Clean EvidenceRefs without quote fabrication
+                        # Clean EvidenceRefs without quote fabrication or leakage
                         supporting_evidence: list[EvidenceRef] = []
                         # Add method evidence ref (from source cards)
-                        for ctx in src_ctxs[:2]:
-                            paper_title = paper_title_map.get(ctx.paper_id, f"Paper {ctx.paper_id}")
+                        # Do NOT reuse task/modality/dataset context evidence as method evidence
+                        for pid in sorted(list(src_pids))[:2]:
+                            paper_title = paper_title_map.get(pid, f"Paper {pid}")
                             supporting_evidence.append(
                                 EvidenceRef(
-                                    paper_id=ctx.paper_id,
+                                    paper_id=pid,
                                     paper_title=paper_title,
                                     evidence_kind="supporting",
                                     claim_or_field="methods",
-                                    source_section=ctx.source_section,
-                                    supporting_text=ctx.supporting_text,
+                                    source_section=None,
+                                    supporting_text=None,
                                 )
                             )
 
-                        # Add target context evidence ref
+                        # Add target context evidence ref with correct plural field names
+                        dim_field = {
+                            "task": "tasks",
+                            "modality": "modalities",
+                            "dataset": "datasets",
+                            "evaluation_condition": "evaluation_conditions",
+                        }.get(dim, dim)
+
                         for ctx in tgt_ctxs[:2]:
                             paper_title = paper_title_map.get(ctx.paper_id, f"Paper {ctx.paper_id}")
                             supporting_evidence.append(
@@ -466,7 +474,7 @@ class MethodTransferGapMiner:
                                     paper_id=ctx.paper_id,
                                     paper_title=paper_title,
                                     evidence_kind="supporting",
-                                    claim_or_field=dim,
+                                    claim_or_field=dim_field,
                                     source_section=ctx.source_section,
                                     supporting_text=ctx.supporting_text,
                                 )

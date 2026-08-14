@@ -268,9 +268,17 @@ def test_evidencerefs_never_contain_fabricated_provenance_summaries() -> None:
     cands = miner.mine_transfer_gaps("Medical Imaging", corpus)
     cand = cands[0]
 
+    method_refs = [r for r in cand.provenance.supporting_evidence if r.claim_or_field == "methods"]
+    target_refs = [r for r in cand.provenance.supporting_evidence if r.claim_or_field == "tasks"]
+
+    assert len(method_refs) > 0
+    assert len(target_refs) > 0
+
+    for ref in method_refs:
+        assert ref.supporting_text is None
+        assert ref.source_section is None
+
     for ref in cand.provenance.supporting_evidence:
-        if ref.claim_or_field == "methods":
-            assert ref.supporting_text is None
         assert "demonstrated in source context" not in (ref.supporting_text or "")
         assert "represented in" not in (ref.supporting_text or "")
 
