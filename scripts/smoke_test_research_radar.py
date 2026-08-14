@@ -71,10 +71,10 @@ def run_smoke_tests(db_url: str = "sqlite:///data/research_radar.db") -> bool:
     ask_service = AskService(repo, llm_provider=mock_llm)
 
     passed_count = 0
-    total_count = 7
+    total_count = 8
 
     # Scenario 1: Project Lookup
-    print("\n[Scenario 1/7] Testing Project Lookup...")
+    print("\n[Scenario 1/8] Testing Project Lookup...")
     project = repo.get_project("MRI Robustness")
     if (
         project is not None
@@ -88,7 +88,7 @@ def run_smoke_tests(db_url: str = "sqlite:///data/research_radar.db") -> bool:
         print("  ✗ FAIL: Project 'MRI Robustness' not found or incomplete.")
 
     # Scenario 2: Global /ask Retrieval
-    print("\n[Scenario 2/7] Testing Global /ask Retrieval...")
+    print("\n[Scenario 2/8] Testing Global /ask Retrieval...")
     ctx_global = ask_service.build_ask_context("diffusion priors")
     if (
         len(ctx_global.retrieved_papers) > 0
@@ -100,7 +100,7 @@ def run_smoke_tests(db_url: str = "sqlite:///data/research_radar.db") -> bool:
         print("  ✗ FAIL: Global paper retrieval failed for 'diffusion priors'.")
 
     # Scenario 3: Project-Scoped /ask Retrieval & Relation Boost
-    print("\n[Scenario 3/7] Testing Project-Scoped /ask Retrieval & Relation Priority...")
+    print("\n[Scenario 3/8] Testing Project-Scoped /ask Retrieval & Relation Priority...")
     ctx_proj = ask_service.build_ask_context(
         "scanner shift", project_id_or_name="MRI Robustness"
     )
@@ -119,15 +119,17 @@ def run_smoke_tests(db_url: str = "sqlite:///data/research_radar.db") -> bool:
         print("  ✗ FAIL: Project-scoped retrieval failed.")
 
     # Scenario 4: Rejected Idea Memory in AskContext & Evidence Prompt
-    print("\n[Scenario 4/7] Testing Rejected Idea Memory...")
+    print("\n[Scenario 4/8] Testing Rejected Idea Memory...")
     if ctx_proj.rejected_ideas and any("Pure GAN" in r for r in ctx_proj.rejected_ideas):
-        print(f"  ✓ PASS: Rejected idea preserved in AskContext: '{ctx_proj.rejected_ideas[0]}'.")
+        print(
+            f"  ✓ PASS: Rejected idea preserved in AskContext: '{ctx_proj.rejected_ideas[0]}'."
+        )
         passed_count += 1
     else:
         print("  ✗ FAIL: Rejected ideas missing in AskContext.")
 
     # Scenario 5: Critic-Aware Gap Retrieval
-    print("\n[Scenario 5/7] Testing Critic-Aware Gap Retrieval...")
+    print("\n[Scenario 5/8] Testing Critic-Aware Gap Retrieval...")
     ctx_gap = ask_service.build_ask_context("real-time multi-coil diffusion")
     if (
         len(ctx_gap.retrieved_gaps) > 0
@@ -144,7 +146,7 @@ def run_smoke_tests(db_url: str = "sqlite:///data/research_radar.db") -> bool:
         print("  ✗ FAIL: Critic review not properly attached to retrieved gap.")
 
     # Scenario 6: Source-ID Safety & Hallucination Filtering
-    print("\n[Scenario 6/7] Testing Source-ID Safety & Hallucination Filtering...")
+    print("\n[Scenario 6/8] Testing Source-ID Safety & Hallucination Filtering...")
     import asyncio
 
     res = asyncio.run(
@@ -162,13 +164,27 @@ def run_smoke_tests(db_url: str = "sqlite:///data/research_radar.db") -> bool:
     else:
         print("  ✗ FAIL: Source-ID safety failed to filter fake IDs.")
 
-    # Scenario 7: All Gap Types Present
-    print("\n[Scenario 7/7] Testing Gap Types Coverage...")
+    # Scenario 7: Coverage Gap Fixture
+    print("\n[Scenario 7/8] Testing Coverage Gap Fixture...")
+    cov_gap = repo.get_candidate("gap-coverage-mri")
+    proj_gaps = repo.list_project_gaps(project.id) if project else []
+    is_linked = any(g.candidate_id == "gap-coverage-mri" for g in proj_gaps)
+    if cov_gap is not None and cov_gap.gap_type == "coverage" and is_linked:
+        print(
+            f"  ✓ PASS: Coverage candidate '{cov_gap.id}' verified with type='{cov_gap.gap_type}' "
+            "and active project linkage."
+        )
+        passed_count += 1
+    else:
+        print("  ✗ FAIL: Coverage candidate missing, wrong gap_type, or not linked to project.")
+
+    # Scenario 8: All 5 Gap Types Present
+    print("\n[Scenario 8/8] Testing All 5 Gap Types Coverage...")
     all_gaps = repo.list_candidates(limit=50)
     gap_types = {g.gap_type for g in all_gaps}
-    expected_types = {"explicit", "evaluation", "contradiction", "method_transfer"}
+    expected_types = {"explicit", "coverage", "evaluation", "contradiction", "method_transfer"}
     if expected_types.issubset(gap_types):
-        print(f"  ✓ PASS: All required gap types present in repository: {sorted(gap_types)}.")
+        print(f"  ✓ PASS: All 5 required gap types present in repository: {sorted(gap_types)}.")
         passed_count += 1
     else:
         missing = expected_types - gap_types

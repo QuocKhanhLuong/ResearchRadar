@@ -396,6 +396,48 @@ def seed_demo_memory(db_url: str = "sqlite:///data/research_radar.db") -> None:
             created_at=now,
         ),
         CandidateGap(
+            id="gap-coverage-mri",
+            title=(
+                "Under-represented low-field (0.55T) evaluation in deep MRI reconstruction"
+            ),
+            description=(
+                "Within the analyzed corpus of MRI reconstruction, deep models are evaluated "
+                "on 1.5T and 3.0T benchmarks, while low-field 0.55T scanners remain "
+                "under-evaluated."
+            ),
+            gap_type="coverage",
+            research_question=(
+                "Within the analyzed corpus of MRI reconstruction, how robust are deep "
+                "architectures when deployed on low-field 0.55T scanner acquisitions?"
+            ),
+            supporting_papers=[paper_id_map["p-spectral-mri"], paper_id_map["p-eval-shift"]],
+            evidence_count=2,
+            novelty_score=0.82,
+            feasibility_score=0.85,
+            confidence=0.80,
+            search_scope="MRI Reconstruction Robustness",
+            review_status="preserved",
+            provenance=GapProvenance(
+                retrievals=[],
+                corpus_paper_ids=[
+                    paper_id_map["p-spectral-mri"],
+                    paper_id_map["p-eval-shift"],
+                ],
+                corpus_description="Demo MRI corpus",
+                supporting_evidence=[
+                    EvidenceRef(
+                        paper_id=paper_id_map["p-eval-shift"],
+                        paper_title=(
+                            "Benchmarking Scanner Shift and Out-of-Distribution Noise in MRI"
+                        ),
+                        evidence_kind="supporting",
+                        claim_or_field="evaluation_conditions",
+                    )
+                ],
+            ),
+            created_at=now,
+        ),
+        CandidateGap(
             id="gap-eval-mri",
             title=(
                 "Standardized evaluation of deep MRI reconstruction under "
@@ -512,6 +554,20 @@ def seed_demo_memory(db_url: str = "sqlite:///data/research_radar.db") -> None:
         )
         repo.save_critic_review(rev_explicit)
 
+    existing_revs_coverage = repo.list_critic_reviews("gap-coverage-mri")
+    if not existing_revs_coverage:
+        rev_coverage = CriticReview(
+            candidate_id="gap-coverage-mri",
+            review_version=1,
+            decision="preserved",
+            rationale=(
+                "Clear coverage gap: low-field 0.55T acquisitions are absent in 1.5T/3T benchmarks."
+            ),
+            caveats=["0.55T raw k-space datasets are currently scarce"],
+            created_at=now,
+        )
+        repo.save_critic_review(rev_coverage)
+
     existing_revs_contra = repo.list_critic_reviews("gap-contradiction-mri")
     if not existing_revs_contra:
         rev_contradiction = CriticReview(
@@ -528,6 +584,7 @@ def seed_demo_memory(db_url: str = "sqlite:///data/research_radar.db") -> None:
 
     # Link Gaps to Project
     repo.add_gap_to_project(project.id, "gap-explicit-mri", status="active")
+    repo.add_gap_to_project(project.id, "gap-coverage-mri", status="active")
     repo.add_gap_to_project(project.id, "gap-eval-mri", status="active")
     repo.add_gap_to_project(project.id, "gap-contradiction-mri", status="interesting")
     repo.add_gap_to_project(project.id, "gap-transfer-mri", status="active")

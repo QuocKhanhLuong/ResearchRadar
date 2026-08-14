@@ -15,7 +15,7 @@ pip install -e ".[dev]"
 
 ### 1.2 Initialize Local SQLite Database & Seed Demo Corpus
 ```bash
-# Seed deterministic MRI Robustness project, PaperCards, gaps, and Critic reviews:
+# Seed deterministic MRI Robustness project, PaperCards, 5 gap types, and Critic reviews:
 python scripts/seed_demo_research_memory.py --db-url sqlite:///data/research_radar.db
 ```
 
@@ -119,27 +119,33 @@ Run the following slash commands in your test Discord server to verify end-to-en
 
 ### 3.4 Gap Engine Slash Commands
 
-Run the 4 supported gap types for topic `"MRI reconstruction robustness"`:
+Run all 5 supported gap types for topic `"MRI reconstruction robustness"`:
 
-#### Explicit Gap Mining
+#### 1. Explicit Gap Mining
 ```
 /gap topic:MRI reconstruction robustness type:explicit
 ```
 *Expected Result*: Analyzes corpus, retrieves candidate explicit gaps (e.g., real-time multi-coil diffusion under scanner shift) with latest Critic reviews (`preserved`).
 
-#### Evaluation Gap Mining
+#### 2. Coverage Gap Mining
+```
+/gap topic:MRI reconstruction robustness type:coverage
+```
+*Expected Result*: Surfaces an evidence-bounded coverage gap from the demo corpus (e.g., under-representation of low-field 0.55T scanners) without claiming global absence.
+
+#### 3. Evaluation Gap Mining
 ```
 /gap topic:MRI reconstruction robustness type:evaluation
 ```
 *Expected Result*: Identifies un-evaluated condition pairs (e.g., concurrent motion artifacts and B0 frequency drift).
 
-#### Contradiction Gap Mining
+#### 4. Contradiction Gap Mining
 ```
 /gap topic:MRI reconstruction robustness type:contradiction
 ```
 *Expected Result*: Surfaces contradictory claims between `p-spectral-mri` (error reduction) and `p-spectral-degrade` (detail loss at 7T low SNR).
 
-#### Method Transfer Gap Mining
+#### 5. Method Transfer Gap Mining
 ```
 /gap topic:MRI reconstruction robustness type:method_transfer
 ```
@@ -155,3 +161,21 @@ Run the 4 supported gap types for topic `"MRI reconstruction robustness"`:
 - [x] **Status Integrity**: Resolved or rejected candidate gaps are explicitly marked as past status and not presented as active open gaps.
 - [x] **Safe Error Handling**: Internal exceptions are logged and replaced with user-friendly messages rather than exposing raw tracebacks.
 - [x] **Language Safety**: Forbidden global novelty claims (*"No one has studied"*, *"This is the first"*) are systematically rewritten or prevented.
+- [x] **Five Gap Types Supported**:
+  - `explicit`
+  - `coverage`
+  - `evaluation`
+  - `contradiction`
+  - `method_transfer`
+
+---
+
+## 5. Ready for Discord Test Gate
+
+READY FOR DISCORD TEST IF:
+- [x] pytest passes (`pytest`)
+- [x] ruff passes (`ruff check .`)
+- [x] demo seed runs twice (`python scripts/seed_demo_research_memory.py`)
+- [x] smoke test passes with 8/8 scenarios (`python scripts/smoke_test_research_radar.py`)
+- [x] all 5 gap types verified (`explicit`, `coverage`, `evaluation`, `contradiction`, `method_transfer`)
+- [x] GitHub Actions CI green
