@@ -22,6 +22,9 @@ from research_radar.models import (
     GapProvenance,
     Paper,
     PaperCard,
+    Project,
+    ProjectGapLink,
+    ProjectPaperLink,
     RetrievalRecord,
     StructuredEvidence,
 )
@@ -33,6 +36,9 @@ from research_radar.storage.tables import (
     PaperCardTable,
     PaperSourceTable,
     PaperTable,
+    ProjectGapTable,
+    ProjectPaperTable,
+    ProjectTable,
     WatchPaperTable,
     WatchTopicTable,
 )
@@ -1194,6 +1200,269 @@ class ResearchRepository:
             if source_url:
                 row.source_url = source_url
 
+    def create_project(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        goal: str | None = None,
+        keywords: list[str] | None = None,
+        constraints: list[str] | None = None,
+        hypotheses: list[str] | None = None,
+        rejected_ideas: list[str] | None = None,
+    ) -> Project:
+        clean_name = _require_text(name, "Project name")
+        norm_name = _normalize_project_name(clean_name)
+        now = _utc_now()
+        with self._session_scope() as session:
+            existing = session.scalar(
+                select(ProjectTable).where(ProjectTable.normalized_name == norm_name)
+            )
+            if existing is not None:
+                raise ValueError(f"Project with name '{clean_name}' already exists.")
+
+            proj_row = ProjectTable(
+                id=_new_id(),
+                name=clean_name,
+                normalized_name=norm_name,
+                description=description.strip() if description else None,
+                goal=goal.strip() if goal else None,
+                keywords=list(keywords or []),
+                constraints=list(constraints or []),
+                hypotheses=list(hypotheses or []),
+                rejected_ideas=list(rejected_ideas or []),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(proj_row)
+            session.flush()
+            return _to_project(proj_row)
+
+    def get_project(self, project_id_or_name: str) -> Project | None:
+        clean = project_id_or_name.strip()
+        if not clean:
+            return None
+        with self._session_scope() as session:
+            proj_row = session.scalar(
+                select(ProjectTable).where(
+                    or_(
+                        ProjectTable.id == clean,
+                        ProjectTable.normalized_name == _normalize_project_name(clean),
+                    )
+                )
+            )
+            return _to_project(proj_row) if proj_row is not None else None
+
+    def list_projects(self) -> list[Project]:
+        with self._session_scope() as session:
+            rows = session.scalars(
+                select(ProjectTable).order_by(desc(ProjectTable.updated_at))
+            ).all()
+            return [_to_project(row) for row in rows]
+
+    def update_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        goal: str | None = None,
+        keywords: list[str] | None = None,
+        constraints: list[str] | None = None,
+        hypotheses: list[str] | None = None,
+        rejected_ideas: list[str] | None = None,
+    ) -> Project:
+        with self._session_scope() as session:
+            row = session.scalar(
+                select(ProjectTable).where(
+                    or_(
+                        ProjectTable.id == project_id.strip(),
+                        ProjectTable.normalized_name == _normalize_project_name(project_id),
+                    )
+                )
+            )
+            if row is None:
+                raise ValueError(f"Project '{project_id}' not found.")
+
+            if name is not None:
+                clean_name = _require_text(name, "Project name")
+                row.name = clean_name
+                row.normalized_name = _normalize_project_name(clean_name)
+            if description is not None:
+                row.description = description.strip() or None
+            if goal is not None:
+                row.goal = goal.strip() or None
+            if keywords is not None:
+                row.keywords = list(keywords)
+            if constraints is not None:
+                row.constraints = list(constraints)
+            if hypotheses is not None:
+                row.hypotheses = list(hypotheses)
+            if rejected_ideas is not None:
+                row.rejected_ideas = list(rejected_ideas)
+
+            row.updated_at = _utc_now()
+            session.flush()
+            return _to_project(row)
+
+    def add_paper_to_project(
+        self,
+        project_id: str,
+        paper_id: str,
+        *,
+        relation: str = "relevant",
+        note: str | None = None,
+    ) -> ProjectPaperLink:
+        now = _utc_now()
+        with self._session_scope() as session:
+            proj = session.scalar(
+                select(ProjectTable).where(
+                    or_(
+                        ProjectTable.id == project_id.strip(),
+                        ProjectTable.normalized_name == _normalize_project_name(project_id),
+                    )
+                )
+            )
+            if proj is None:
+                raise ValueError(f"Project '{project_id}' not found.")
+
+            paper = session.scalar(select(PaperTable).where(PaperTable.id == paper_id.strip()))
+            if paper is None:
+                raise ValueError(f"Paper '{paper_id}' not found.")
+
+            link_row = session.scalar(
+                select(ProjectPaperTable).where(
+                    ProjectPaperTable.project_id == proj.id,
+                    ProjectPaperTable.paper_id == paper.id,
+                )
+            )
+            if link_row is None:
+                link_row = ProjectPaperTable(
+                    project_id=proj.id,
+                    paper_id=paper.id,
+                    relation=relation.strip() or "relevant",
+                    note=note.strip() if note else None,
+                    created_at=now,
+                )
+                session.add(link_row)
+            else:
+                link_row.relation = relation.strip() or "relevant"
+                if note is not None:
+                    link_row.note = note.strip() or None
+
+            proj.updated_at = now
+            session.flush()
+            return ProjectPaperLink(
+                project_id=link_row.project_id,
+                paper_id=link_row.paper_id,
+                relation=link_row.relation,
+                note=link_row.note,
+                created_at=link_row.created_at,
+            )
+
+    def list_project_papers(self, project_id: str) -> list[ProjectPaperLink]:
+        with self._session_scope() as session:
+            proj = session.scalar(
+                select(ProjectTable).where(
+                    or_(
+                        ProjectTable.id == project_id.strip(),
+                        ProjectTable.normalized_name == _normalize_project_name(project_id),
+                    )
+                )
+            )
+            if proj is None:
+                return []
+            rows = session.scalars(
+                select(ProjectPaperTable).where(ProjectPaperTable.project_id == proj.id)
+            ).all()
+            return [
+                ProjectPaperLink(
+                    project_id=row.project_id,
+                    paper_id=row.paper_id,
+                    relation=row.relation,
+                    note=row.note,
+                    created_at=row.created_at,
+                )
+                for row in rows
+            ]
+
+    def add_gap_to_project(
+        self,
+        project_id: str,
+        candidate_id: str,
+        *,
+        status: str = "active",
+    ) -> ProjectGapLink:
+        now = _utc_now()
+        with self._session_scope() as session:
+            proj = session.scalar(
+                select(ProjectTable).where(
+                    or_(
+                        ProjectTable.id == project_id.strip(),
+                        ProjectTable.normalized_name == _normalize_project_name(project_id),
+                    )
+                )
+            )
+            if proj is None:
+                raise ValueError(f"Project '{project_id}' not found.")
+
+            cand = session.scalar(
+                select(GapCandidateTable).where(GapCandidateTable.id == candidate_id.strip())
+            )
+            if cand is None:
+                raise ValueError(f"CandidateGap '{candidate_id}' not found.")
+
+            link_row = session.scalar(
+                select(ProjectGapTable).where(
+                    ProjectGapTable.project_id == proj.id,
+                    ProjectGapTable.candidate_id == cand.id,
+                )
+            )
+            if link_row is None:
+                link_row = ProjectGapTable(
+                    project_id=proj.id,
+                    candidate_id=cand.id,
+                    status=status.strip() or "active",
+                    created_at=now,
+                )
+                session.add(link_row)
+            else:
+                link_row.status = status.strip() or "active"
+
+            proj.updated_at = now
+            session.flush()
+            return ProjectGapLink(
+                project_id=link_row.project_id,
+                candidate_id=link_row.candidate_id,
+                status=link_row.status,
+                created_at=link_row.created_at,
+            )
+
+    def list_project_gaps(self, project_id: str) -> list[ProjectGapLink]:
+        with self._session_scope() as session:
+            proj = session.scalar(
+                select(ProjectTable).where(
+                    or_(
+                        ProjectTable.id == project_id.strip(),
+                        ProjectTable.normalized_name == _normalize_project_name(project_id),
+                    )
+                )
+            )
+            if proj is None:
+                return []
+            rows = session.scalars(
+                select(ProjectGapTable).where(ProjectGapTable.project_id == proj.id)
+            ).all()
+            return [
+                ProjectGapLink(
+                    project_id=row.project_id,
+                    candidate_id=row.candidate_id,
+                    status=row.status,
+                    created_at=row.created_at,
+                )
+                for row in rows
+            ]
+
     @staticmethod
     def _find_digest_run(
         session: Session,
@@ -1239,6 +1508,28 @@ def _to_stored_paper(row: PaperTable) -> StoredPaper:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _to_project(row: ProjectTable) -> Project:
+    return Project(
+        id=row.id,
+        name=row.name,
+        description=row.description,
+        goal=row.goal,
+        keywords=list(row.keywords or []),
+        constraints=list(row.constraints or []),
+        hypotheses=list(row.hypotheses or []),
+        rejected_ideas=list(row.rejected_ideas or []),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _normalize_project_name(name: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    if not cleaned:
+        raise ValueError("Project name must contain valid alphanumeric characters.")
+    return cleaned
 
 
 def _parse_structured_evidence(items: Iterable[object] | None) -> list[StructuredEvidence]:

@@ -231,3 +231,73 @@ class GapReviewTable(Base):
 
     candidate: Mapped[GapCandidateTable] = relationship(back_populates="reviews")
 
+
+class ProjectTable(Base):
+    """Single-user research project entity."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    normalized_name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
+    constraints: Mapped[list[str]] = mapped_column(JSON, default=list)
+    hypotheses: Mapped[list[str]] = mapped_column(JSON, default=list)
+    rejected_ideas: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+    papers: Mapped[list[ProjectPaperTable]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    gaps: Mapped[list[ProjectGapTable]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ProjectPaperTable(Base):
+    """Lightweight link between a project and a canonical paper."""
+
+    __tablename__ = "project_papers"
+
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    paper_id: Mapped[str] = mapped_column(
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    relation: Mapped[str] = mapped_column(String(64), default="relevant")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+    project: Mapped[ProjectTable] = relationship(back_populates="papers")
+    paper: Mapped[PaperTable] = relationship()
+
+
+class ProjectGapTable(Base):
+    """Lightweight link between a project and a CandidateGap."""
+
+    __tablename__ = "project_gaps"
+
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("gap_candidates.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(64), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+    project: Mapped[ProjectTable] = relationship(back_populates="gaps")
+    candidate: Mapped[GapCandidateTable] = relationship()
+
