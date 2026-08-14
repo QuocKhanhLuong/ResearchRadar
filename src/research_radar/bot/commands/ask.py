@@ -68,5 +68,7 @@ def register_ask_command(
             res = await service.ask(question, project_id_or_name=project)
             embed = render_ask_embed(question, res)
             await interaction.followup.send(embed=embed)
-        except Exception as exc:
-            await interaction.followup.send(content=f"Error executing /ask: {exc}")
+        except Exception:
+            await interaction.followup.send(
+                content="I couldn't process your question right now. Please try again later."
+            )

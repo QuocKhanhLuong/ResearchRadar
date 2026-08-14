@@ -1,4 +1,4 @@
-"""Research memory question answering engine (/ask V1.1 Hardened)."""
+"""Research memory question answering engine (/ask V1.2 Hardened)."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from dataclasses import dataclass, field
 from pydantic import BaseModel, ConfigDict, Field
 
 from research_radar.models.gap import CandidateGap, CriticReview
+from research_radar.models.paper_card import PaperCard
 from research_radar.models.project import Project, ProjectGapLink, ProjectPaperLink
 from research_radar.reader.llm.base import LLMMessage, LLMProvider
 from research_radar.storage.repositories import (
     ResearchRepository,
     StoredPaper,
-    StoredPaperCard,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,14 +52,26 @@ class AskLLMResponse(BaseModel):
     is_sufficient_evidence: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class AskBudget:
+    """Character and entity limits bounding the /ask evidence packet."""
+
+    max_papers: int = 6
+    max_gaps: int = 4
+    max_claims_per_card: int = 3
+    max_conditions_per_card: int = 3
+    max_chars_per_evidence_item: int = 600
+    max_total_context_chars: int = 8000
+
+
 @dataclass
 class AskContext:
-    """Expanded evidence context bounding an /ask query."""
+    """Single source of truth for retrieved research memory and allowed IDs."""
 
     query: str
     project: Project | None = None
     retrieved_papers: list[StoredPaper] = field(default_factory=list)
-    retrieved_cards: list[StoredPaperCard] = field(default_factory=list)
+    retrieved_cards: list[PaperCard] = field(default_factory=list)
     retrieved_gaps: list[CandidateGap] = field(default_factory=list)
     critic_reviews: dict[str, CriticReview] = field(default_factory=dict)
     project_paper_links: list[ProjectPaperLink] = field(default_factory=list)
@@ -67,6 +79,18 @@ class AskContext:
     hypotheses: list[str] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
     rejected_ideas: list[str] = field(default_factory=list)
+
+    @property
+    def allowed_paper_ids(self) -> set[str]:
+        """All paper IDs permissible for LLM citation."""
+        return {p.id for p in self.retrieved_papers} | {
+            c.paper_id for c in self.retrieved_cards
+        }
+
+    @property
+    def allowed_gap_ids(self) -> set[str]:
+        """All gap IDs permissible for LLM citation."""
+        return {g.id for g in self.retrieved_gaps}
 
 
 def sanitize_llm_response(text: str) -> str:
@@ -88,6 +112,128 @@ def _tokenize(text: str) -> set[str]:
     return set(re.findall(r"\b[a-z0-9]+\b", norm))
 
 
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3] + "..."
+
+
+def format_evidence_packet(ctx: AskContext, budget: AskBudget) -> str:
+    """Build a deterministic, bounded text packet directly from AskContext."""
+
+    blocks: list[str] = []
+    proj_paper_map = {link.paper_id: link for link in ctx.project_paper_links}
+    proj_gap_map = {link.candidate_id: link for link in ctx.project_gap_links}
+    card_map = {c.paper_id: c for c in ctx.retrieved_cards}
+
+    # 1. Project Memory
+    if ctx.project:
+        p_lines = [
+            "--- Project Memory ---",
+            f"Name: {ctx.project.name}",
+            f"Goal: {ctx.project.goal or 'N/A'}",
+        ]
+        if ctx.project.keywords:
+            p_lines.append(f"Keywords: {', '.join(ctx.project.keywords)}")
+        if ctx.hypotheses:
+            p_lines.append(f"Hypotheses: {', '.join(ctx.hypotheses)}")
+        if ctx.constraints:
+            p_lines.append(f"Constraints: {', '.join(ctx.constraints)}")
+        if ctx.rejected_ideas:
+            rej_text = ", ".join(ctx.rejected_ideas)
+            p_lines.append(
+                f"REJECTED IDEAS (Project History - Do NOT recommend as new): {rej_text}"
+            )
+        blocks.append("\n".join(p_lines))
+
+    # 2. Papers & Cards
+    for p in ctx.retrieved_papers[: budget.max_papers]:
+        p_lines = [
+            f"--- Paper {p.id} ---",
+            f"Title: {p.title}",
+            f"Abstract: {_truncate_text(p.abstract or 'N/A', 300)}",
+        ]
+        if p.id in proj_paper_map:
+            link = proj_paper_map[p.id]
+            p_lines.append(f"Project Relation: {link.relation} (Note: {link.note or 'N/A'})")
+
+        if p.id in card_map:
+            c = card_map[p.id]
+            if c.problem:
+                p_lines.append(f"Problem: {_truncate_text(c.problem, 150)}")
+            if c.tasks:
+                task_strs = [
+                    f"{t.value} [{t.status}]"
+                    for t in c.tasks[: budget.max_conditions_per_card]
+                ]
+                p_lines.append(f"Tasks: {', '.join(task_strs)}")
+            if c.modalities:
+                mod_strs = [
+                    f"{m.value} [{m.status}]"
+                    for m in c.modalities[: budget.max_conditions_per_card]
+                ]
+                p_lines.append(f"Modalities: {', '.join(mod_strs)}")
+            if c.evaluation_conditions:
+                eval_strs = [
+                    f"{e.value} [{e.status}]"
+                    for e in c.evaluation_conditions[: budget.max_conditions_per_card]
+                ]
+                p_lines.append(f"Evaluation conditions: {', '.join(eval_strs)}")
+            if c.methods:
+                p_lines.append(f"Methods: {', '.join(c.methods[:4])}")
+            if c.datasets:
+                p_lines.append(f"Datasets: {', '.join(c.datasets[:3])}")
+            if c.metrics:
+                p_lines.append(f"Metrics: {', '.join(c.metrics[:3])}")
+            if c.main_claims:
+                claim_strs = [
+                    f'"{_truncate_text(cl.claim, 100)}" [{cl.source_section or "Section"}]'
+                    for cl in c.main_claims[: budget.max_claims_per_card]
+                ]
+                p_lines.append(f"Main claims: {'; '.join(claim_strs)}")
+            if c.limitations:
+                p_lines.append(f"Limitations: {', '.join(c.limitations[:3])}")
+            if c.failure_cases:
+                p_lines.append(f"Failure cases: {', '.join(c.failure_cases[:2])}")
+
+        item_text = "\n".join(p_lines)
+        blocks.append(_truncate_text(item_text, budget.max_chars_per_evidence_item))
+
+    # 3. Gaps & Critic Reviews
+    for g in ctx.retrieved_gaps[: budget.max_gaps]:
+        g_lines = [
+            f"--- CandidateGap {g.id} ---",
+            f"Title: {g.title}",
+            f"Type: {g.gap_type}",
+            f"Review Status: {g.review_status}",
+            f"Confidence: {g.confidence}",
+            f"RQ: {_truncate_text(g.research_question, 200)}",
+            f"Description: {_truncate_text(g.description, 200)}",
+        ]
+        if g.id in proj_gap_map:
+            link = proj_gap_map[g.id]
+            status_note = (
+                "PAST RESOLVED/REJECTED GAP - Do NOT present as active open gap"
+                if link.status in ("resolved", "rejected")
+                else "ACTIVE PROJECT GAP"
+            )
+            g_lines.append(f"Project Gap Link Status: {link.status} ({status_note})")
+
+        if g.id in ctx.critic_reviews:
+            rev = ctx.critic_reviews[g.id]
+            g_lines.append(
+                f"Latest Critic Review (v{rev.review_version}): decision={rev.decision}, "
+                f"rationale={_truncate_text(rev.rationale, 150)}, "
+                f"caveats={', '.join(rev.caveats[:2])}"
+            )
+
+        item_text = "\n".join(g_lines)
+        blocks.append(_truncate_text(item_text, budget.max_chars_per_evidence_item))
+
+    full_packet = "\n\n".join(blocks)
+    return _truncate_text(full_packet, budget.max_total_context_chars)
+
+
 class AskService:
     """Retrieve memory context and prompt vendor-neutral LLM for evidence-bounded Q&A."""
 
@@ -95,9 +241,186 @@ class AskService:
         self,
         repository: ResearchRepository,
         llm_provider: LLMProvider | None = None,
+        budget: AskBudget | None = None,
     ) -> None:
         self._repository = repository
         self._llm_provider = llm_provider
+        self._budget = budget or AskBudget()
+
+    def build_ask_context(
+        self,
+        question: str,
+        *,
+        project_id_or_name: str | None = None,
+        max_evidence: int = 10,
+    ) -> AskContext:
+        """Deterministically retrieve and assemble AskContext."""
+
+        q_tokens = _tokenize(question)
+        project: Project | None = None
+        if project_id_or_name:
+            project = self._repository.get_project(project_id_or_name)
+
+        proj_paper_links: list[ProjectPaperLink] = []
+        proj_gap_links: list[ProjectGapLink] = []
+        proj_paper_map: dict[str, ProjectPaperLink] = {}
+        proj_gap_map: dict[str, ProjectGapLink] = {}
+
+        if project is not None:
+            proj_paper_links = self._repository.list_project_papers(project.id)
+            proj_gap_links = self._repository.list_project_gaps(project.id)
+            proj_paper_map = {link.paper_id: link for link in proj_paper_links}
+            proj_gap_map = {link.candidate_id: link for link in proj_gap_links}
+
+        # 1. Collect candidate papers
+        candidate_papers_dict: dict[str, StoredPaper] = {}
+        for pid in proj_paper_map:
+            p = self._repository.get_paper(pid)
+            if p is not None:
+                candidate_papers_dict[p.id] = p
+
+        global_papers = self._repository.search_papers(query=question, limit=max_evidence * 3)
+        for p in global_papers:
+            if p.id not in candidate_papers_dict:
+                candidate_papers_dict[p.id] = p
+
+        # 2. Collect paper cards
+        candidate_cards_dict: dict[str, PaperCard] = {}
+        for pid in candidate_papers_dict:
+            card = self._repository.get_paper_card(pid)
+            if card is not None:
+                candidate_cards_dict[pid] = card
+
+        # 3. Score papers with relevance gate and bounded project bonus
+        relation_bonus_map = {
+            "seed": 8.0,
+            "supporting": 8.0,
+            "conflicting": 8.0,
+            "relevant": 5.0,
+            "background": 2.0,
+        }
+
+        scored_papers: list[tuple[float, StoredPaper]] = []
+        for pid, paper in candidate_papers_dict.items():
+            card = candidate_cards_dict.get(pid)
+            c_tokens: set[str] = set()
+            if card is not None:
+                c_values: list[str] = [card.problem or "", card.motivation or ""]
+                c_values.extend(card.methods)
+                c_values.extend(card.datasets)
+                c_values.extend(card.metrics)
+                c_values.extend(card.limitations)
+                c_values.extend(card.failure_cases)
+                for t in card.tasks:
+                    c_values.append(t.value)
+                for m in card.modalities:
+                    c_values.append(m.value)
+                for ec in card.evaluation_conditions:
+                    c_values.append(ec.value)
+                for cl in card.main_claims:
+                    c_values.append(cl.claim)
+                c_tokens = _tokenize(" ".join(c_values))
+
+            title_tokens = _tokenize(paper.title)
+            abstract_tokens = _tokenize(paper.abstract or "")
+            author_tokens = _tokenize(" ".join(paper.authors))
+
+            title_hits = len(q_tokens & title_tokens)
+            abstract_hits = len(q_tokens & abstract_tokens)
+            card_hits = len(q_tokens & c_tokens)
+            author_hits = len(q_tokens & author_tokens)
+
+            lexical_score = (
+                (3.0 * title_hits) + (2.0 * abstract_hits) + (1.0 * card_hits) + (1.0 * author_hits)
+            )
+
+            # Phase 1 Gate: If lexical_score == 0, exclude paper from evidence retrieval
+            if lexical_score == 0.0:
+                continue
+
+            project_boost = 0.0
+            if pid in proj_paper_map:
+                rel = proj_paper_map[pid].relation
+                project_boost = relation_bonus_map.get(rel, 2.0)
+
+            total_score = (lexical_score * 2.0) + project_boost
+            scored_papers.append((total_score, paper))
+
+        scored_papers.sort(key=lambda x: x[0], reverse=True)
+        top_papers = [p for _, p in scored_papers[: min(max_evidence, self._budget.max_papers)]]
+        top_cards = [
+            candidate_cards_dict[p.id] for p in top_papers if p.id in candidate_cards_dict
+        ]
+
+        # 4. Collect & score candidate gaps
+        candidate_gaps_dict: dict[str, CandidateGap] = {}
+        for gid in proj_gap_map:
+            g = self._repository.get_candidate(gid)
+            if g is not None:
+                candidate_gaps_dict[g.id] = g
+
+        global_gaps = self._repository.list_candidates(limit=50)
+        for g in global_gaps:
+            if g.id not in candidate_gaps_dict:
+                candidate_gaps_dict[g.id] = g
+
+        scored_gaps: list[tuple[float, CandidateGap]] = []
+        for gid, gap in candidate_gaps_dict.items():
+            g_title_tokens = _tokenize(gap.title)
+            g_desc_tokens = _tokenize(gap.description)
+            g_rq_tokens = _tokenize(gap.research_question)
+
+            title_hits = len(q_tokens & g_title_tokens)
+            desc_hits = len(q_tokens & g_desc_tokens)
+            rq_hits = len(q_tokens & g_rq_tokens)
+
+            lexical_score = (3.0 * title_hits) + (2.0 * desc_hits) + (2.0 * rq_hits)
+
+            # Gate: If lexical_score == 0, exclude gap
+            if lexical_score == 0.0:
+                continue
+
+            project_boost = 0.0
+            if gid in proj_gap_map:
+                st = proj_gap_map[gid].status
+                if st in ("active", "interesting"):
+                    project_boost = 4.0
+                elif st in ("rejected", "resolved"):
+                    project_boost = 0.0
+                else:
+                    project_boost = 2.0
+
+            total_score = (lexical_score * 2.0) + project_boost
+            scored_gaps.append((total_score, gap))
+
+        scored_gaps.sort(key=lambda x: x[0], reverse=True)
+        top_gaps = [g for _, g in scored_gaps[: min(max_evidence, self._budget.max_gaps)]]
+
+        # 5. Fetch latest Critic Review for top gaps
+        critic_reviews: dict[str, CriticReview] = {}
+        for g in top_gaps:
+            reviews = self._repository.list_critic_reviews(g.id)
+            if reviews:
+                critic_reviews[g.id] = reviews[-1]
+
+        # 6. Assemble AskContext
+        return AskContext(
+            query=question,
+            project=project,
+            retrieved_papers=top_papers,
+            retrieved_cards=top_cards,
+            retrieved_gaps=top_gaps,
+            critic_reviews=critic_reviews,
+            project_paper_links=[
+                proj_paper_map[p.id] for p in top_papers if p.id in proj_paper_map
+            ],
+            project_gap_links=[
+                proj_gap_map[g.id] for g in top_gaps if g.id in proj_gap_map
+            ],
+            hypotheses=list(project.hypotheses) if project else [],
+            constraints=list(project.constraints) if project else [],
+            rejected_ideas=list(project.rejected_ideas) if project else [],
+        )
 
     async def ask(
         self,
@@ -115,141 +438,18 @@ class AskService:
                 is_sufficient_evidence=False,
             )
 
-        project: Project | None = None
-        if project_id_or_name:
-            project = self._repository.get_project(project_id_or_name)
-
-        proj_paper_links: list[ProjectPaperLink] = []
-        proj_gap_links: list[ProjectGapLink] = []
-        proj_paper_map: dict[str, ProjectPaperLink] = {}
-        proj_gap_map: dict[str, ProjectGapLink] = {}
-
-        if project is not None:
-            proj_paper_links = self._repository.list_project_papers(project.id)
-            proj_gap_links = self._repository.list_project_gaps(project.id)
-            proj_paper_map = {link.paper_id: link for link in proj_paper_links}
-            proj_gap_map = {link.candidate_id: link for link in proj_gap_links}
-
-        # 1. Collect candidate papers (Project-linked + Global)
-        candidate_papers_dict: dict[str, StoredPaper] = {}
-        for pid in proj_paper_map:
-            p = self._repository.get_paper(pid)
-            if p is not None:
-                candidate_papers_dict[p.id] = p
-
-        global_papers = self._repository.search_papers(query=question, limit=max_evidence * 3)
-        for p in global_papers:
-            if p.id not in candidate_papers_dict:
-                candidate_papers_dict[p.id] = p
-
-        # 2. Collect candidate paper cards
-        candidate_cards_dict: dict[str, StoredPaperCard] = {}
-        for pid in candidate_papers_dict:
-            card_row = self._repository.get_paper_card(pid)
-            if card_row is not None:
-                candidate_cards_dict[pid] = card_row
-
-        # 3. Score & rank papers
-        relation_bonus_map = {
-            "seed": 30.0,
-            "supporting": 30.0,
-            "conflicting": 30.0,
-            "relevant": 25.0,
-            "background": 20.0,
-        }
-
-        scored_papers: list[tuple[float, StoredPaper]] = []
-        for pid, paper in candidate_papers_dict.items():
-            card_row = candidate_cards_dict.get(pid)
-            c_text = ""
-            if card_row is not None:
-                c_text = (
-                    f"{card_row.card.problem or ''} {' '.join(card_row.card.methods)} "
-                    f"{' '.join(card_row.card.metrics)} {' '.join(card_row.card.limitations)}"
-                )
-
-            p_text = f"{paper.title} {paper.abstract or ''} {' '.join(paper.authors)} {c_text}"
-            p_toks = _tokenize(p_text)
-            overlap = len(q_tokens & p_toks)
-
-            project_boost = 0.0
-            if pid in proj_paper_map:
-                rel = proj_paper_map[pid].relation
-                project_boost = relation_bonus_map.get(rel, 20.0)
-
-            total_score = project_boost + float(overlap)
-            if total_score > 0 or pid in proj_paper_map:
-                scored_papers.append((total_score, paper))
-
-        scored_papers.sort(key=lambda x: x[0], reverse=True)
-        top_papers = [p for _, p in scored_papers[:max_evidence]]
-        top_cards = [candidate_cards_dict[p.id] for p in top_papers if p.id in candidate_cards_dict]
-
-        # 4. Collect & score candidate gaps
-        candidate_gaps_dict: dict[str, CandidateGap] = {}
-        for gid in proj_gap_map:
-            g = self._repository.get_candidate(gid)
-            if g is not None:
-                candidate_gaps_dict[g.id] = g
-
-        global_gaps = self._repository.list_candidates(limit=50)
-        for g in global_gaps:
-            if g.id not in candidate_gaps_dict:
-                candidate_gaps_dict[g.id] = g
-
-        scored_gaps: list[tuple[float, CandidateGap]] = []
-        for gid, gap in candidate_gaps_dict.items():
-            g_text = f"{gap.title} {gap.description} {gap.research_question}"
-            g_toks = _tokenize(g_text)
-            g_overlap = len(q_tokens & g_toks)
-
-            project_boost = 0.0
-            if gid in proj_gap_map:
-                st = proj_gap_map[gid].status
-                if st in ("active", "interesting"):
-                    project_boost = 25.0
-                elif st in ("rejected", "resolved"):
-                    project_boost = 5.0
-                else:
-                    project_boost = 20.0
-
-            total_score = project_boost + float(g_overlap)
-            if total_score > 0 or gid in proj_gap_map:
-                scored_gaps.append((total_score, gap))
-
-        scored_gaps.sort(key=lambda x: x[0], reverse=True)
-        top_gaps = [g for _, g in scored_gaps[:max_evidence]]
-
-        # 5. Fetch Critic Reviews for top gaps
-        critic_reviews: dict[str, CriticReview] = {}
-        for g in top_gaps:
-            reviews = self._repository.list_critic_reviews(g.id)
-            if reviews:
-                critic_reviews[g.id] = reviews[-1]
-
-        # 6. Assemble AskContext
-        _ = AskContext(
-            query=question,
-            project=project,
-            retrieved_papers=top_papers,
-            retrieved_cards=top_cards,
-            retrieved_gaps=top_gaps,
-            critic_reviews=critic_reviews,
-            project_paper_links=[
-                proj_paper_map[p.id] for p in top_papers if p.id in proj_paper_map
-            ],
-            project_gap_links=[proj_gap_map[g.id] for g in top_gaps if g.id in proj_gap_map],
-            hypotheses=list(project.hypotheses) if project else [],
-            constraints=list(project.constraints) if project else [],
-            rejected_ideas=list(project.rejected_ideas) if project else [],
+        # Build AskContext as single source of truth
+        ctx = self.build_ask_context(
+            question,
+            project_id_or_name=project_id_or_name,
+            max_evidence=max_evidence,
         )
 
-        # Source ID Safety sets
-        allowed_paper_ids = {p.id for p in top_papers} | {c.card.paper_id for c in top_cards}
-        allowed_gap_ids = {g.id for g in top_gaps}
+        allowed_paper_ids = ctx.allowed_paper_ids
+        allowed_gap_ids = ctx.allowed_gap_ids
 
-        # Deterministic fallback when no evidence matches and no project provided
-        if not top_papers and not top_cards and not top_gaps and not project:
+        # Check if memory has any evidence or project definition
+        if not ctx.retrieved_papers and not ctx.retrieved_gaps and not ctx.project:
             return AskResponse(
                 answer=(
                     "I found insufficient stored evidence to determine an answer to your question. "
@@ -262,25 +462,27 @@ class AskService:
             )
 
         if self._llm_provider is None:
-            # Deterministic fallback synthesis when LLM provider is not supplied
+            # Deterministic fallback synthesis directly from AskContext
             lines: list[str] = [
                 "Based on the analyzed project corpus currently stored in ResearchRadar:"
             ]
-            if project:
-                lines.append(f"• Project Scope: '{project.name}' (Goal: {project.goal or 'N/A'})")
-                if project.rejected_ideas:
-                    lines.append(
-                        f"• Project Rejected Ideas (History): {', '.join(project.rejected_ideas)}"
-                    )
-            if top_papers:
+            if ctx.project:
                 lines.append(
-                    f"• Found {len(top_papers)} matching stored paper(s): "
-                    + ", ".join(f"'{p.title}'" for p in top_papers[:3])
+                    f"• Project Scope: '{ctx.project.name}' (Goal: {ctx.project.goal or 'N/A'})"
                 )
-            if top_gaps:
+                if ctx.rejected_ideas:
+                    lines.append(
+                        f"• Project Rejected Ideas (History): {', '.join(ctx.rejected_ideas)}"
+                    )
+            if ctx.retrieved_papers:
                 lines.append(
-                    f"• Found {len(top_gaps)} matching candidate gap(s): "
-                    + ", ".join(f"'{g.title}'" for g in top_gaps[:3])
+                    f"• Found {len(ctx.retrieved_papers)} matching stored paper(s): "
+                    + ", ".join(f"'{p.title}'" for p in ctx.retrieved_papers[:3])
+                )
+            if ctx.retrieved_gaps:
+                lines.append(
+                    f"• Found {len(ctx.retrieved_gaps)} matching candidate gap(s): "
+                    + ", ".join(f"'{g.title}'" for g in ctx.retrieved_gaps[:3])
                 )
             lines.append("Note: Connect an LLMProvider for automated synthesis.")
 
@@ -294,76 +496,8 @@ class AskService:
                 is_sufficient_evidence=True,
             )
 
-        # Build evidence packet for LLM
-        evidence_blocks: list[str] = []
-        if project:
-            rej_text = ", ".join(project.rejected_ideas)
-            proj_info = [
-                "--- Project Memory ---",
-                f"Name: {project.name}",
-                f"Goal: {project.goal or 'N/A'}",
-                f"Keywords: {', '.join(project.keywords)}",
-                f"Hypotheses: {', '.join(project.hypotheses)}",
-                f"Constraints: {', '.join(project.constraints)}",
-                f"REJECTED IDEAS (Project History - Do NOT recommend as new): {rej_text}",
-            ]
-            evidence_blocks.append("\n".join(proj_info))
-
-        for p in top_papers:
-            p_block = [
-                f"--- Paper {p.id} ---",
-                f"Title: {p.title}",
-                f"Abstract: {p.abstract or 'N/A'}",
-            ]
-            if p.id in proj_paper_map:
-                link = proj_paper_map[p.id]
-                p_block.append(f"Project Relation: {link.relation} (Note: {link.note or 'N/A'})")
-
-            card_row = candidate_cards_dict.get(p.id)
-            if card_row is not None:
-                c = card_row.card
-                if c.problem:
-                    p_block.append(f"Problem: {c.problem}")
-                if c.methods:
-                    p_block.append(f"Methods: {', '.join(c.methods)}")
-                if c.datasets:
-                    p_block.append(f"Datasets: {', '.join(c.datasets)}")
-                if c.metrics:
-                    p_block.append(f"Metrics: {', '.join(c.metrics)}")
-                if c.limitations:
-                    p_block.append(f"Limitations: {', '.join(c.limitations)}")
-
-            evidence_blocks.append("\n".join(p_block))
-
-        for g in top_gaps:
-            g_block = [
-                f"--- CandidateGap {g.id} ---",
-                f"Title: {g.title}",
-                f"Type: {g.gap_type}",
-                f"Review Status: {g.review_status}",
-                f"Confidence: {g.confidence}",
-                f"RQ: {g.research_question}",
-                f"Description: {g.description}",
-            ]
-            if g.id in proj_gap_map:
-                link = proj_gap_map[g.id]
-                status_note = (
-                    "PAST RESOLVED/REJECTED GAP"
-                    if link.status in ("resolved", "rejected")
-                    else "ACTIVE"
-                )
-                g_block.append(f"Project Gap Link Status: {link.status} ({status_note})")
-
-            if g.id in critic_reviews:
-                rev = critic_reviews[g.id]
-                g_block.append(
-                    f"Latest Critic Review (v{rev.review_version}): decision={rev.decision}, "
-                    f"rationale={rev.rationale}, caveats={', '.join(rev.caveats)}"
-                )
-
-            evidence_blocks.append("\n".join(g_block))
-
-        prompt_evidence = "\n\n".join(evidence_blocks)
+        # Build evidence packet from AskContext using budget
+        prompt_evidence = format_evidence_packet(ctx, self._budget)
 
         system_prompt = (
             "You are ResearchRadar, a private single-user research assistant.\n"
@@ -398,7 +532,7 @@ class AskService:
             llm_res = await self._llm_provider.generate_structured(messages, AskLLMResponse)
             clean_answer = sanitize_llm_response(llm_res.answer)
 
-            # Phase 3: Source ID Safety Validation (Discard hallucinated IDs)
+            # Phase 3: Source ID Safety Validation against AskContext allowed sets
             val_pids = [
                 pid
                 for pid in dict.fromkeys(llm_res.referenced_paper_ids)
@@ -416,10 +550,10 @@ class AskService:
                 referenced_gap_ids=val_gids,
                 is_sufficient_evidence=llm_res.is_sufficient_evidence,
             )
-        except Exception as exc:
-            logger.exception("LLM Q&A failed.")
+        except Exception:
+            logger.exception("LLM Q&A generation failed.")
             return AskResponse(
-                answer=f"Error processing question with LLM: {exc}",
+                answer="I couldn't synthesize an answer from the stored evidence right now.",
                 referenced_paper_ids=list(dict.fromkeys(allowed_paper_ids)),
                 referenced_gap_ids=list(dict.fromkeys(allowed_gap_ids)),
                 is_sufficient_evidence=False,

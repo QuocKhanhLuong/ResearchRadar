@@ -129,8 +129,10 @@ def register_project_commands(
             await interaction.followup.send(
                 content=f"Created project '{proj.name}'!", embed=embed
             )
-        except Exception as exc:
-            await interaction.followup.send(content=f"Error creating project: {exc}")
+        except Exception:
+            await interaction.followup.send(
+                content="Could not create project. Please check the provided name and arguments."
+            )
 
     @tree.command(name="project-list", description="List all research projects.")
     async def project_list_cmd(interaction: discord.Interaction) -> None:
@@ -187,8 +189,10 @@ def register_project_commands(
             await interaction.followup.send(
                 content=f"Linked paper `{link.paper_id}` to project as '{link.relation}'."
             )
-        except Exception as exc:
-            await interaction.followup.send(content=f"Error linking paper: {exc}")
+        except Exception:
+            await interaction.followup.send(
+                content="Could not link paper to project. Please verify project and paper IDs."
+            )
 
     @tree.command(name="project-add-gap", description="Link a candidate gap to a research project.")
     @app_commands.describe(
@@ -213,5 +217,7 @@ def register_project_commands(
                     f"with status '{link.status}'."
                 )
             )
-        except Exception as exc:
-            await interaction.followup.send(content=f"Error linking gap: {exc}")
+        except Exception:
+            await interaction.followup.send(
+                content="Could not link gap to project. Please verify project and gap IDs."
+            )
