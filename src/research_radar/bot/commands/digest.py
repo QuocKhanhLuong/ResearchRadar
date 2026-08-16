@@ -8,6 +8,8 @@ from typing import Protocol
 import discord
 from discord import app_commands
 
+from research_radar.bot.interactions import safe_defer
+
 logger = logging.getLogger(__name__)
 
 MAX_DISCORD_CONTENT_CHARS = 2_000
@@ -35,7 +37,8 @@ def register_digest_command(
     """Register an on-demand ``/digest`` command over an injected service."""
 
     async def digest(interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             result = await digest_service.build_on_demand()
             content = result.render_text()

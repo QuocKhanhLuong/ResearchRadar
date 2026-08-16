@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 import discord
 from discord import app_commands
 
+from research_radar.bot.interactions import safe_defer
 from research_radar.gap.service import GapAnalysisResult
 from research_radar.models.gap import CandidateGap, CriticReview
 
@@ -144,7 +145,8 @@ def register_gap_commands(
             "explicit", "coverage", "evaluation", "contradiction", "method_transfer"
         ] = "explicit",
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             result = await gap_service.analyze_gaps(topic, count=count, gap_type=type)
             if result.is_insufficient_evidence:
@@ -187,7 +189,8 @@ def register_gap_commands(
     async def gap_show_cmd(
         interaction: discord.Interaction, candidate_id: str
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             candidate, reviews = gap_service.get_candidate_detail(candidate_id.strip())
             if candidate is None:

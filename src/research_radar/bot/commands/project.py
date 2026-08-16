@@ -7,6 +7,7 @@ from typing import Protocol
 import discord
 from discord import app_commands
 
+from research_radar.bot.interactions import safe_defer
 from research_radar.models.project import Project, ProjectGapLink, ProjectPaperLink
 
 
@@ -121,7 +122,8 @@ def register_project_commands(
         goal: str | None = None,
         keywords: str | None = None,
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         kw_list = [k.strip() for k in keywords.split(",")] if keywords else []
         try:
             proj = service.create_project(name=name, goal=goal, keywords=kw_list)
@@ -136,7 +138,8 @@ def register_project_commands(
 
     @tree.command(name="project-list", description="List all research projects.")
     async def project_list_cmd(interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         projects = service.list_projects()
         if not projects:
             await interaction.followup.send(content="No research projects found.")
@@ -158,7 +161,8 @@ def register_project_commands(
     @tree.command(name="project-show", description="Show details of a research project.")
     @app_commands.describe(project="Name or ID of the research project")
     async def project_show_cmd(interaction: discord.Interaction, project: str) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         proj = service.get_project(project)
         if proj is None:
             await interaction.followup.send(content=f"Project '{project}' not found.")
@@ -181,7 +185,8 @@ def register_project_commands(
         paper_id: str,
         relation: str = "relevant",
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             link = service.add_paper_to_project(
                 project_id=project, paper_id=paper_id, relation=relation
@@ -206,7 +211,8 @@ def register_project_commands(
         gap_id: str,
         status: str = "active",
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             link = service.add_gap_to_project(
                 project_id=project, candidate_id=gap_id, status=status

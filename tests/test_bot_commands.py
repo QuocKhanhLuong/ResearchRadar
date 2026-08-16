@@ -6,11 +6,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
+from discord import app_commands
 
+from research_radar.bot.commands.ask import (
+    NO_LLM_CONFIGURED_MESSAGE,
+    register_ask_command,
+)
 from research_radar.bot.commands.digest import register_digest_command
+from research_radar.bot.commands.project import register_project_commands
 from research_radar.bot.commands.read import register_read_command
 from research_radar.bot.commands.watch import register_watch_commands
 from research_radar.errors import LLMUnavailableError, PaperParseError
@@ -239,3 +246,89 @@ async def test_digest_hides_internal_service_failure_details() -> None:
     content = interaction.edit_original_response.call_args.kwargs["content"]
     assert content == "The research digest is temporarily unavailable. Please try again later."
     assert "secret-like" not in content
+
+
+@pytest.mark.asyncio
+async def test_project_list_exits_cleanly_on_expired_interaction() -> None:
+    client = discord.Client(intents=discord.Intents.none())
+    tree = app_commands.CommandTree(client)
+    project_service = MagicMock()
+    register_project_commands(tree, project_service)
+
+    resp = MagicMock(status=404, reason="Not Found")
+    interaction = SimpleNamespace(
+        id=123,
+        response=SimpleNamespace(
+            defer=AsyncMock(
+                side_effect=discord.NotFound(
+                    resp, {"code": 10062, "message": "Unknown interaction"}
+                )
+            ),
+            is_done=lambda: False,
+        ),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+    cmd = tree.get_command("project-list")
+    assert cmd is not None
+    await cmd.callback(interaction)
+
+    project_service.list_projects.assert_not_called()
+    interaction.followup.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_project_show_does_not_double_ack() -> None:
+    client = discord.Client(intents=discord.Intents.none())
+    tree = app_commands.CommandTree(client)
+    project_service = MagicMock()
+    project_service.get_project.return_value = None
+    register_project_commands(tree, project_service)
+
+    defer_mock = AsyncMock()
+    followup_send = AsyncMock()
+    interaction = SimpleNamespace(
+        id=123,
+        response=SimpleNamespace(
+            defer=defer_mock,
+            is_done=lambda: True,
+        ),
+        followup=SimpleNamespace(send=followup_send),
+    )
+
+    cmd = tree.get_command("project-show")
+    assert cmd is not None
+    await cmd.callback(interaction, project="MRI Robustness")
+
+    defer_mock.assert_not_called()
+    project_service.get_project.assert_called_once_with("MRI Robustness")
+    followup_send.assert_awaited_once_with(content="Project 'MRI Robustness' not found.")
+
+
+@pytest.mark.asyncio
+async def test_ask_returns_user_friendly_unavailable_message_without_traceback() -> None:
+    client = discord.Client(intents=discord.Intents.none())
+    tree = app_commands.CommandTree(client)
+    ask_service = AsyncMock()
+    ask_service.ask = AsyncMock(
+        side_effect=LLMUnavailableError("No language model is configured.")
+    )
+    register_ask_command(tree, ask_service)
+
+    followup_send = AsyncMock()
+    interaction = SimpleNamespace(
+        id=123,
+        response=SimpleNamespace(
+            defer=AsyncMock(),
+            is_done=lambda: False,
+        ),
+        followup=SimpleNamespace(send=followup_send),
+    )
+
+    cmd = tree.get_command("ask")
+    assert cmd is not None
+    await cmd.callback(interaction, question="What is MRI?")
+
+    followup_send.assert_awaited_once_with(content=NO_LLM_CONFIGURED_MESSAGE)
+    assert "LLM_PROVIDER=remote" in NO_LLM_CONFIGURED_MESSAGE
+

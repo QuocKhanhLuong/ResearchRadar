@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 import discord
 from discord import app_commands
 
+from research_radar.bot.interactions import safe_defer
+from research_radar.errors import LLMUnavailableError
 from research_radar.research.ask import AskResponse
+
+logger = logging.getLogger(__name__)
+
+NO_LLM_CONFIGURED_MESSAGE = (
+    "No language model is configured. Set LLM_PROVIDER=remote and configure "
+    "LLM_BASE_URL, LLM_MODEL, and LLM_API_KEY to use /ask."
+)
 
 
 class AskCommandRegistrationService(Protocol):
@@ -63,12 +73,16 @@ def register_ask_command(
         question: str,
         project: str | None = None,
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             res = await service.ask(question, project_id_or_name=project)
             embed = render_ask_embed(question, res)
             await interaction.followup.send(embed=embed)
+        except LLMUnavailableError:
+            await interaction.followup.send(content=NO_LLM_CONFIGURED_MESSAGE)
         except Exception:
+            logger.exception("Unhandled error during /ask execution.")
             await interaction.followup.send(
                 content="I couldn't process your question right now. Please try again later."
             )

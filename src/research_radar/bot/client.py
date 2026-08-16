@@ -21,6 +21,7 @@ from research_radar.bot.commands.ping import register_ping_command
 from research_radar.bot.commands.project import ProjectCommandService, register_project_commands
 from research_radar.bot.commands.read import register_read_command
 from research_radar.bot.commands.watch import register_watch_commands
+from research_radar.bot.interactions import on_app_command_error
 from research_radar.config import Settings
 from research_radar.research.service import ResearchService
 
@@ -80,6 +81,7 @@ class ResearchRadarBot(discord.Client):
         super().__init__(intents=_application_intents())
         self.settings = settings
         self.tree = app_commands.CommandTree(self)
+        self.tree.on_error = on_app_command_error
         self._startup_hooks = list(startup_hooks)
         self._shutdown_hooks = list(shutdown_hooks)
         self._owned_resources_closed = False

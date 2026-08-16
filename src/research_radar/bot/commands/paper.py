@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 
 from research_radar.bot.embeds import discovery_warning_text, paper_search_embeds
+from research_radar.bot.interactions import safe_defer
 from research_radar.errors import ProviderUnavailableError
 from research_radar.research.service import ResearchService
 
@@ -24,7 +25,8 @@ def register_paper_command(
         query: app_commands.Range[str, 1, 300],
         count: app_commands.Range[int, 1, 10] = 5,
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             result = await research_service.search(query, count)
         except ValueError as error:

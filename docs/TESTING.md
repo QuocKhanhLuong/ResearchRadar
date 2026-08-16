@@ -57,6 +57,10 @@ LLM_API_KEY="your_api_key_here"
 LLM_MODEL="gpt-4o-mini"
 ```
 
+#### LLM Provider Configuration Notes:
+- `LLM_PROVIDER="mock"`: Safe default for local development, offline runs, and automated test suites. In this mode, no real LLM is configured. Running `/ask` will cleanly return a helpful notice explaining how to configure a remote LLM without throwing backend tracebacks. Features such as `/project-*`, `/ping`, `/gap-show`, watchlist management, and database seed inspection work fully without a real LLM.
+- `LLM_PROVIDER="remote"`: Required to test live generative synthesis for `/ask` and `/read`. Set `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY` to an OpenAI-compatible API endpoint.
+
 ### 2.2 Start the Discord Bot
 ```bash
 python -m research_radar.bot
@@ -64,11 +68,22 @@ python -m research_radar.bot
 
 ---
 
-## 3. Manual Discord Slash Command Verification
+## 3. Discord Interaction Troubleshooting
+
+### 3.1 Known Discord Interaction Error Codes
+- **10062 (`Unknown interaction`)**: Discord interactions expire if initial acknowledgement (`defer` or `send_message`) is not received within 3 seconds. The application catches this via `safe_defer`, logs a concise warning, and aborts command execution cleanly without noisy traceback spam.
+- **40060 (`Interaction has already been acknowledged`)**: Occurs when an interaction was already acknowledged (e.g. rapid duplicate dispatch). Handled safely by `safe_defer`, allowing execution to continue without error.
+
+### 3.2 Gateway `RESUMED` Events & Connection Drops
+If Discord logs show frequent `RESUMED session ...` events or heartbeat delays during manual testing, this typically indicates local network, VPN, or proxy instability. The application handles interaction timeouts gracefully; do not attempt to "fix" gateway behavior with custom heartbeat intervals or reconnect monkey-patches in application code.
+
+---
+
+## 4. Manual Discord Slash Command Verification
 
 Run the following slash commands in your test Discord server to verify end-to-end functionality:
 
-### 3.1 Health Check
+### 4.1 Health Check
 ```
 /ping
 ```
@@ -76,7 +91,7 @@ Run the following slash commands in your test Discord server to verify end-to-en
 
 ---
 
-### 3.2 Project Memory Inspection
+### 4.2 Project Memory Inspection
 ```
 /project-list
 ```
@@ -94,7 +109,7 @@ Run the following slash commands in your test Discord server to verify end-to-en
 
 ---
 
-### 3.3 Project-Aware Question Answering (/ask)
+### 4.3 Project-Aware Question Answering (/ask)
 
 #### Query 1: Unresolved Robustness Issues
 ```
@@ -117,7 +132,7 @@ Run the following slash commands in your test Discord server to verify end-to-en
 
 ---
 
-### 3.4 Gap Engine Slash Commands
+### 4.4 Gap Engine Slash Commands
 
 Run all 5 supported gap types for topic `"MRI reconstruction robustness"`:
 
@@ -153,7 +168,7 @@ Run all 5 supported gap types for topic `"MRI reconstruction robustness"`:
 
 ---
 
-## 4. Key Guardrails & Behavior Verification Checklist
+## 5. Key Guardrails & Behavior Verification Checklist
 
 - [x] **Project Scoping**: Project-linked papers receive deterministic boosts only when lexically relevant; unrelated project papers never crowd out search slots.
 - [x] **Source-ID Safety**: LLM citations are strictly validated against `AskContext.allowed_paper_ids` and `allowed_gap_ids`. Hallucinated IDs are discarded.
@@ -170,7 +185,7 @@ Run all 5 supported gap types for topic `"MRI reconstruction robustness"`:
 
 ---
 
-## 5. Ready for Discord Test Gate
+## 6. Ready for Discord Test Gate
 
 READY FOR DISCORD TEST IF:
 - [x] pytest passes (`pytest`)

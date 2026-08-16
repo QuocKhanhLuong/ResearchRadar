@@ -10,6 +10,8 @@ from typing import Protocol
 import discord
 from discord import app_commands
 
+from research_radar.bot.interactions import safe_defer
+
 logger = logging.getLogger(__name__)
 
 MAX_DISCORD_CONTENT_CHARS = 2_000
@@ -52,7 +54,8 @@ def register_watch_commands(
         name: app_commands.Range[str, 1, 120],
         query: app_commands.Range[str, 1, 300],
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             topic = await watch_service.add_topic(name, query)
         except ValueError as error:
@@ -78,7 +81,8 @@ def register_watch_commands(
         )
 
     async def list_(interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             topics = await watch_service.list_topics()
         except Exception:
@@ -95,7 +99,8 @@ def register_watch_commands(
         interaction: discord.Interaction,
         topic: app_commands.Range[str, 1, 255],
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             removed = await watch_service.remove_topic(topic)
         except ValueError as error:

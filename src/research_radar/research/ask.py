@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from research_radar.errors import LLMUnavailableError
 from research_radar.models.gap import CandidateGap, CriticReview
 from research_radar.models.paper_card import PaperCard
 from research_radar.models.project import Project, ProjectGapLink, ProjectPaperLink
@@ -550,6 +551,9 @@ class AskService:
                 referenced_gap_ids=val_gids,
                 is_sufficient_evidence=llm_res.is_sufficient_evidence,
             )
+        except LLMUnavailableError:
+            logger.info("LLM Q&A generation skipped: no language model is configured.")
+            raise
         except Exception:
             logger.exception("LLM Q&A generation failed.")
             return AskResponse(

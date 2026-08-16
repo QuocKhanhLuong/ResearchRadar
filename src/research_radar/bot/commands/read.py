@@ -8,6 +8,7 @@ from typing import Protocol
 import discord
 from discord import app_commands
 
+from research_radar.bot.interactions import safe_defer
 from research_radar.errors import (
     LLMResponseError,
     LLMUnavailableError,
@@ -42,7 +43,8 @@ def register_read_command(
         interaction: discord.Interaction,
         url: app_commands.Range[str, 1, 2_000],
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await safe_defer(interaction, thinking=True):
+            return
         try:
             result = await reader_service.read_url(url)
         except PaperNotFoundError:
