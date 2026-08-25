@@ -24,8 +24,6 @@ pytest.importorskip("research_radar.chat.service")
 pytest.importorskip("research_radar.memory")
 pytest.importorskip("research_radar.bot.mention")
 
-from research_radar.chat.models import ChatMode, ChatRequest  # noqa: E402
-
 from e2e.fakes import (  # noqa: E402
     BOT_USER_ID,
     FAKE_LLM_ANSWER,
@@ -47,6 +45,7 @@ from e2e.fakes import (  # noqa: E402
     seed_user_memory,
     total_scout_calls,
 )
+from research_radar.chat.models import ChatMode, ChatRequest  # noqa: E402
 from research_radar.models.paper import Paper  # noqa: E402
 
 MEMORY_PREFERENCE_QUERY = "what research topics do I prefer?"

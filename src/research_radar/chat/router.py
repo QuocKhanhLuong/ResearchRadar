@@ -327,7 +327,10 @@ def _route_deterministic(request: ChatRequest) -> tuple[RouteDecision, bool]:
         return (
             RouteDecision(
                 mode=ChatMode.PROJECT_RESEARCH,
-                needs_user_memory=False,
+                # Project-aware answers still load advisory user memory: the
+                # authority rule ("explicit project state outranks inferred
+                # memory") is only expressible when both reach the prompt.
+                needs_user_memory=True,
                 needs_stored_research=True,
                 allows_live_discovery=False,
                 search_query=normalize_search_query(text),
@@ -373,7 +376,10 @@ def _route_deterministic(request: ChatRequest) -> tuple[RouteDecision, bool]:
         return (
             RouteDecision(
                 mode=ChatMode.PROJECT_RESEARCH,
-                needs_user_memory=False,
+                # Project-aware answers still load advisory user memory: the
+                # authority rule ("explicit project state outranks inferred
+                # memory") is only expressible when both reach the prompt.
+                needs_user_memory=True,
                 needs_stored_research=True,
                 allows_live_discovery=False,
                 search_query=normalize_search_query(text),

@@ -85,7 +85,6 @@ def _build_stack(ctx: SimpleNamespace, **overrides: Any) -> SimpleNamespace:
 
     from research_radar.chat.router import ChatRouter
     from research_radar.chat.service import ChatService
-
     from research_radar.research.ingestion import IngestionService
     from research_radar.research.scout import ScoutService
 
@@ -440,11 +439,10 @@ def load_production_modules() -> ProductionModules:
     from research_radar.chat.models import ChatMode, ChatRequest
     from research_radar.chat.router import ChatRouter
     from research_radar.chat.service import ChatService
+    from research_radar.config import Settings
     from research_radar.memory.capture import MemoryCapturePolicy
     from research_radar.memory.fakes import FakeUserMemoryStore
     from research_radar.memory.models import MemoryFact
-
-    from research_radar.config import Settings
     from research_radar.models.paper import Paper
     from research_radar.research.ingestion import IngestionService
     from research_radar.research.scout import ScoutService

@@ -259,9 +259,19 @@ class ChatService:
 
         if not decision.needs_user_memory:
             return UserMemoryContext()
+        # A project-scoped question often names nothing the memory graph knows
+        # ("what should we try next on this project?"), so fold the resolved
+        # project name into the retrieval query. Without it the user's own
+        # recorded beliefs about that project are unreachable, and the
+        # project-outranks-memory authority rule never gets to apply.
+        query_parts = [request.text.strip()]
+        project_hint = decision.project_hint or request.project_hint
+        if project_hint:
+            query_parts.append(project_hint.strip())
+        query = " ".join(part for part in query_parts if part)[:_MAX_MEMORY_QUERY_CHARS]
         try:
             return await self._user_memory.get_context(
-                request.text.strip()[:_MAX_MEMORY_QUERY_CHARS],
+                query,
                 limit=max(0, self._budget.max_user_memory_facts),
             )
         except Exception as exc:
