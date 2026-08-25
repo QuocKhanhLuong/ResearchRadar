@@ -25,6 +25,16 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
 ]
+# Local semantic embeddings. Optional so the default install and CI stay light;
+# the model is downloaded lazily on first use, never during tests.
+embeddings = [
+    "sentence-transformers>=3.0",
+]
+# Derived semantic index. Optional: SEMANTIC_INDEX=disabled is the default and
+# the application is fully functional without it.
+pinecone = [
+    "pinecone>=5.0",
+]
 
 [project.scripts]
 research-radar = "research_radar.main:main"
