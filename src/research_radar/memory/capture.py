@@ -27,7 +27,6 @@ import re
 from dataclasses import dataclass
 
 from research_radar.memory.models import MemoryClass
-
 from research_radar.memory.secrets import contains_secret, redact_secrets
 
 

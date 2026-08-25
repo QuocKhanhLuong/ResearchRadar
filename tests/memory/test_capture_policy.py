@@ -3,35 +3,10 @@
 from __future__ import annotations
 
 import base64
-import sys
-import types
 from dataclasses import asdict
-from enum import StrEnum
-
-try:
-    from research_radar.memory.models import MemoryClass
-except ModuleNotFoundError:  # pragma: no cover - W2 owns models.py; until it
-    # lands in this worktree, install a contract-shaped stand-in so these
-    # tests exercise capture.py exactly as they will post-integration.
-    class MemoryClass(StrEnum):
-        """Contract-shaped fallback mirroring PHASE_CONTRACTS section 3."""
-
-        PREFERENCE = "preference"
-        GOAL = "goal"
-        CONSTRAINT = "constraint"
-        RESEARCH_INTEREST = "research_interest"
-        PROJECT_DECISION = "project_decision"
-        REJECTED_IDEA = "rejected_idea"
-        TOOL_PREFERENCE = "tool_preference"
-        WORKFLOW_PREFERENCE = "workflow_preference"
-        RESEARCH_DIRECTION = "research_direction"
-        TEMPORAL_PLAN = "temporal_plan"
-
-    _stub_module = types.ModuleType("research_radar.memory.models")
-    _stub_module.MemoryClass = MemoryClass
-    sys.modules.setdefault("research_radar.memory.models", _stub_module)
 
 from research_radar.memory.capture import CaptureDecision, MemoryCapturePolicy
+from research_radar.memory.models import MemoryClass
 from research_radar.memory.secrets import REDACTED_PLACEHOLDER, contains_secret, redact_secrets
 
 
