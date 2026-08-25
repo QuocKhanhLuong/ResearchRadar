@@ -42,7 +42,18 @@ def identity_keys(paper: Paper) -> list[str]:
 
 
 def deduplicate(papers: Iterable[Paper]) -> list[Paper]:
-    """Group exact IDs first, then titles only when their strong IDs do not conflict."""
+    """Merge each identity group into one representative paper."""
+
+    return [merge_papers(group) for group in group_papers(papers)]
+
+
+def group_papers(papers: Iterable[Paper]) -> list[list[Paper]]:
+    """Group exact IDs first, then titles only when their strong IDs do not conflict.
+
+    This is the single grouping implementation. ``deduplicate`` merges each
+    group into one paper; callers that must retain per-provider provenance
+    consume the groups directly rather than re-deriving the identity logic.
+    """
 
     records = list(papers)
     parent = list(range(len(records)))
@@ -89,7 +100,7 @@ def deduplicate(papers: Iterable[Paper]) -> list[Paper]:
     groups: dict[int, list[Paper]] = defaultdict(list)
     for index, paper in enumerate(records):
         groups[find(index)].append(paper)
-    return [merge_papers(group) for _, group in sorted(groups.items(), key=lambda item: item[0])]
+    return [group for _, group in sorted(groups.items(), key=lambda item: item[0])]
 
 
 def _strong_identity_keys(paper: Paper) -> list[str]:

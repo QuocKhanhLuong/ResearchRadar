@@ -28,6 +28,12 @@ class ScoutService:
     def __init__(self, providers: list[PaperProvider]) -> None:
         self._providers = providers
 
+    @property
+    def provider_names(self) -> list[str]:
+        """Return the configured provider names, in fan-out order."""
+
+        return [provider.name for provider in self._providers]
+
     async def search(self, query: str, limit: int) -> ScoutResult:
         """Fan out safely and surface only a concise warning per unavailable provider."""
 
