@@ -48,6 +48,17 @@ for your application:
 
 - Enabling it requires the optional dependency group:
   `pip install -e ".[memory]"`.
+- **It also requires working LLM settings.** Graphiti uses an LLM to extract
+  entities from an episode and an embedder to search them, so
+  `USER_MEMORY_BACKEND=graphiti` needs `LLM_BASE_URL`, `LLM_MODEL`, and
+  `LLM_API_KEY` set. It cannot run against `LLM_PROVIDER=mock`; with the LLM
+  unconfigured the store logs exactly which variables are missing and stays
+  disabled rather than half-initializing.
+- Kuzu is deprecated upstream (graphiti-core steers users to Neo4j or
+  FalkorDB) but remains the only embedded, zero-server backend, which is what
+  a private single-user daemon should run. The adapter pins it, suppresses
+  that one deprecation warning at its own boundary, and keeps the swap behind
+  the `UserMemoryStore` interface.
 - If the package is missing or the backend fails, the store degrades to
   disabled behaviour with a sanitized log line; chat never breaks because of
   memory.

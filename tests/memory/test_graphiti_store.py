@@ -435,3 +435,45 @@ async def test_default_client_factory_builds_real_backend_offline(tmp_path: Path
     assert status.detail == ""
     assert Path(settings.user_memory_db_path).exists()
     assert dict(os.environ) == environ_before
+
+
+async def test_missing_llm_configuration_degrades_with_an_actionable_message(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """USER_MEMORY_BACKEND=graphiti without LLM settings must say so plainly.
+
+    Graphiti needs an LLM for extraction and an embedder for search, so it
+    cannot run against LLM_PROVIDER=mock. The operator has to be told that
+    rather than being pointed at a generic backend failure, and no database
+    file may be left behind by the doomed attempt.
+    """
+
+    for override in (
+        {"llm_api_key": None},
+        {"llm_base_url": None},
+        {"llm_model": None},
+    ):
+        caplog.clear()
+        settings = make_settings(tmp_path, **override)
+        built = False
+
+        def _never_called() -> object:  # pragma: no cover - must not run
+            nonlocal built
+            built = True
+            raise AssertionError("client factory ran despite missing LLM settings")
+
+        store = GraphitiUserMemoryStore(settings, client_factory=_never_called)
+        with caplog.at_level(logging.WARNING):
+            status = await store.status()
+
+        assert built is False
+        assert status.healthy is False
+        messages = " ".join(record.getMessage() for record in warning_records(caplog))
+        assert "LLM_BASE_URL" in messages
+        assert "LLM_API_KEY" in messages
+        assert _TEST_CREDENTIAL not in messages
+        assert not settings.user_memory_db_path_resolved().parent.exists()
+
+        assert await store.add_episode("I prefer duckdb") is False
+        assert await store.search("preferences") == []
+        await store.close()

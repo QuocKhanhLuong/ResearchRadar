@@ -319,6 +319,17 @@ class GraphitiUserMemoryStore:
                 return False
             if self._client is not None:
                 return True
+            if self._missing_llm_configuration():
+                # Graphiti needs an LLM for entity extraction and an embedder
+                # for search, so it cannot run against LLM_PROVIDER=mock. Say
+                # so explicitly: the generic "initialization failed" message
+                # sends operators looking at Kuzu instead of at their config.
+                self._mark_degraded(
+                    "configuration",
+                    "USER_MEMORY_BACKEND=graphiti also requires LLM_BASE_URL, "
+                    "LLM_MODEL and LLM_API_KEY; personal memory stays disabled.",
+                )
+                return False
             try:
                 await asyncio.to_thread(self._ensure_storage_directory)
                 client = await asyncio.to_thread(self._client_factory)
@@ -337,6 +348,20 @@ class GraphitiUserMemoryStore:
                 self._client = client
                 return True
             return False
+
+    def _missing_llm_configuration(self) -> bool:
+        """Report whether the LLM settings Graphiti needs are absent.
+
+        Checked before any filesystem work so a misconfigured install does not
+        leave an empty Kuzu database behind. Never reads the secret value.
+        """
+
+        settings = self._settings
+        return (
+            settings.llm_api_key is None
+            or not settings.llm_base_url
+            or not settings.llm_model
+        )
 
     def _ensure_storage_directory(self) -> None:
         """Create the database parent directory on first use, never at import."""
