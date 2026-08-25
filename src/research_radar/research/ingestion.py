@@ -184,16 +184,26 @@ class IngestionService:
         paper_ids: list[str],
         warnings: list[str],
     ) -> None:
-        """Link every persisted paper to a project without aborting on one failure."""
+        """Link every persisted paper to a project in one bounded transaction.
 
-        for paper_id in paper_ids:
-            try:
-                await asyncio.to_thread(
-                    self._repository.add_paper_to_project, project_id, paper_id
-                )
-            except Exception:
-                logger.warning("Project link skipped for one paper.")
-                warnings.append("One paper could not be linked to the project.")
+        A whole run is linked at once rather than one statement per paper, and
+        a link failure degrades to a warning so it never aborts an otherwise
+        successful ingestion.
+        """
+
+        if not paper_ids:
+            return
+        try:
+            linked = await asyncio.to_thread(
+                self._repository.add_papers_to_project, project_id, list(paper_ids)
+            )
+        except Exception:
+            logger.warning("Project linking failed for this ingestion run.")
+            warnings.append("Papers could not be linked to the project.")
+            return
+        skipped = len(paper_ids) - len(linked)
+        if skipped > 0:
+            logger.info("Project linking skipped %d already-linked paper(s).", skipped)
 
     async def _auto_read_canonical_papers(
         self,

@@ -6,7 +6,7 @@ import logging
 import math
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +28,7 @@ from research_radar.models import (
     RetrievalRecord,
     StructuredEvidence,
 )
+from research_radar.providers.normalization import normalize_arxiv_id
 from research_radar.storage.database import Database
 from research_radar.storage.tables import (
     DigestRunTable,
@@ -1387,6 +1388,65 @@ class ResearchRepository:
                 created_at=link_row.created_at,
             )
 
+    def add_papers_to_project(
+        self,
+        project_id: str,
+        paper_ids: Sequence[str],
+        *,
+        relation: str = "relevant",
+    ) -> list[str]:
+        """Link many papers to one project inside a single transaction.
+
+        Ingestion links a whole run's worth of papers at once. Doing that one
+        statement at a time costs a transaction and a thread hop per paper, so
+        the batch form exists for that caller. Unknown paper ids are skipped and
+        reported rather than aborting the batch; an unknown project still
+        raises, because that is a caller error.
+        """
+
+        now = _utc_now()
+        linked: list[str] = []
+        with self._session_scope() as session:
+            proj = session.scalar(
+                select(ProjectTable).where(
+                    or_(
+                        ProjectTable.id == project_id.strip(),
+                        ProjectTable.normalized_name == _normalize_project_name(project_id),
+                    )
+                )
+            )
+            if proj is None:
+                raise ValueError(f"Project '{project_id}' not found.")
+
+            existing = set(
+                session.scalars(
+                    select(ProjectPaperTable.paper_id).where(
+                        ProjectPaperTable.project_id == proj.id
+                    )
+                ).all()
+            )
+            known = set(
+                session.scalars(
+                    select(PaperTable.id).where(PaperTable.id.in_(list(paper_ids)))
+                ).all()
+            )
+            for paper_id in paper_ids:
+                if paper_id not in known or paper_id in existing:
+                    continue
+                session.add(
+                    ProjectPaperTable(
+                        project_id=proj.id,
+                        paper_id=paper_id,
+                        relation=relation,
+                        note=None,
+                        created_at=now,
+                    )
+                )
+                existing.add(paper_id)
+                linked.append(paper_id)
+            session.flush()
+        return linked
+
     def list_project_papers(self, project_id: str) -> list[ProjectPaperLink]:
         with self._session_scope() as session:
             proj = session.scalar(
@@ -1786,12 +1846,9 @@ def _normalize_external_id(provider: str, value: str) -> str:
     if provider == "openalex":
         cleaned = re.sub(r"^https?://openalex\.org/", "", cleaned, flags=re.IGNORECASE)
     if provider == "arxiv":
-        cleaned = re.sub(
-            r"^https?://arxiv\.org/(?:abs|pdf)/",
-            "",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
+        # Delegate to the shared normalizer so mirror hosts, version suffixes
+        # and legacy archive namespaces all collapse to one stable identity.
+        return normalize_arxiv_id(cleaned) or ""
     prefixes = (
         f"{provider}:",
         f"{provider.replace('_', '-')}:",
@@ -1817,11 +1874,15 @@ def _normalize_doi(value: str | None) -> str | None:
 
 
 def _normalize_arxiv_identity(value: str) -> str:
-    arxiv_id = unicodedata.normalize("NFKC", value).strip()
-    arxiv_id = re.sub(r"^https?://arxiv\.org/(?:abs|pdf)/", "", arxiv_id, flags=re.IGNORECASE)
-    arxiv_id = re.sub(r"^arxiv:\s*", "", arxiv_id, flags=re.IGNORECASE)
-    arxiv_id = arxiv_id.removesuffix(".pdf")
-    return re.sub(r"v\d+$", "", arxiv_id, flags=re.IGNORECASE).casefold()
+    """Reduce an arXiv reference to the shared canonical identity.
+
+    This delegates to the provider-boundary normalizer rather than repeating
+    it. A second implementation here previously failed on mirror hosts such as
+    export.arxiv.org and www.arxiv.org, which arXiv itself emits, so the same
+    paper could acquire two different arXiv identities and escape dedup.
+    """
+
+    return normalize_arxiv_id(value) or ""
 
 
 def _normalize_title(value: str) -> str:

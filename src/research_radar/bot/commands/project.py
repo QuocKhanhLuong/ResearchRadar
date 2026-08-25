@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol
 
 import discord
@@ -126,7 +127,9 @@ def register_project_commands(
             return
         kw_list = [k.strip() for k in keywords.split(",")] if keywords else []
         try:
-            proj = service.create_project(name=name, goal=goal, keywords=kw_list)
+            proj = await asyncio.to_thread(
+                service.create_project, name=name, goal=goal, keywords=kw_list
+            )
             embed = render_project_embed(proj)
             await interaction.followup.send(
                 content=f"Created project '{proj.name}'!", embed=embed
@@ -140,7 +143,7 @@ def register_project_commands(
     async def project_list_cmd(interaction: discord.Interaction) -> None:
         if not await safe_defer(interaction, thinking=True):
             return
-        projects = service.list_projects()
+        projects = await asyncio.to_thread(service.list_projects)
         if not projects:
             await interaction.followup.send(content="No research projects found.")
             return
@@ -163,13 +166,13 @@ def register_project_commands(
     async def project_show_cmd(interaction: discord.Interaction, project: str) -> None:
         if not await safe_defer(interaction, thinking=True):
             return
-        proj = service.get_project(project)
+        proj = await asyncio.to_thread(service.get_project, project)
         if proj is None:
             await interaction.followup.send(content=f"Project '{project}' not found.")
             return
 
-        papers = service.list_project_papers(proj.id)
-        gaps = service.list_project_gaps(proj.id)
+        papers = await asyncio.to_thread(service.list_project_papers, proj.id)
+        gaps = await asyncio.to_thread(service.list_project_gaps, proj.id)
         embed = render_project_embed(proj, papers=papers, gaps=gaps)
         await interaction.followup.send(embed=embed)
 
@@ -188,8 +191,11 @@ def register_project_commands(
         if not await safe_defer(interaction, thinking=True):
             return
         try:
-            link = service.add_paper_to_project(
-                project_id=project, paper_id=paper_id, relation=relation
+            link = await asyncio.to_thread(
+                service.add_paper_to_project,
+                project_id=project,
+                paper_id=paper_id,
+                relation=relation,
             )
             await interaction.followup.send(
                 content=f"Linked paper `{link.paper_id}` to project as '{link.relation}'."
@@ -214,7 +220,8 @@ def register_project_commands(
         if not await safe_defer(interaction, thinking=True):
             return
         try:
-            link = service.add_gap_to_project(
+            link = await asyncio.to_thread(
+                service.add_gap_to_project,
                 project_id=project, candidate_id=gap_id, status=status
             )
             await interaction.followup.send(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal, Protocol
 
@@ -192,7 +193,9 @@ def register_gap_commands(
         if not await safe_defer(interaction, thinking=True):
             return
         try:
-            candidate, reviews = gap_service.get_candidate_detail(candidate_id.strip())
+            candidate, reviews = await asyncio.to_thread(
+                gap_service.get_candidate_detail, candidate_id.strip()
+            )
             if candidate is None:
                 await interaction.edit_original_response(
                     content=f"Candidate gap with ID '{candidate_id}' was not found.",

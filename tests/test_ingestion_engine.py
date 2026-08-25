@@ -588,3 +588,39 @@ def test_same_publication_from_two_providers_merges_despite_url_shaped_pmid(
 
     assert first == second
     assert count_rows(database, "papers") == 1
+
+
+def test_arxiv_mirror_hosts_resolve_to_one_canonical_identity(database: Database) -> None:
+    """Mirror-host arXiv URLs must not create a second identity for one paper.
+
+    arXiv itself serves export.arxiv.org and www.arxiv.org. A storage-local
+    arXiv normalizer that only stripped the bare arxiv.org prefix left those
+    URLs intact as identities, so the same preprint arriving from two sources
+    silently escaped deduplication.
+    """
+
+    repository = ResearchRepository(database)
+    first = repository.upsert_merged_paper(
+        Paper(
+            id="arxiv:2101.00001",
+            title="Conditional computation for efficient inference",
+            source="arxiv",
+            external_ids={"arxiv": "2101.00001"},
+        )
+    )
+    second = repository.upsert_merged_paper(
+        Paper(
+            id="semantic_scholar:S9",
+            title="Conditional computation for efficient inference",
+            source="semantic_scholar",
+            external_ids={
+                "semantic_scholar": "S9",
+                "arxiv": "http://export.arxiv.org/abs/2101.00001v2",
+            },
+        )
+    )
+
+    assert first == second
+    assert count_rows(database, "papers") == 1
+    sources = {s.provider: s.external_id for s in repository.list_paper_sources(first)}
+    assert sources["arxiv"] == "2101.00001"

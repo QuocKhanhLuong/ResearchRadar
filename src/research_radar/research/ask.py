@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -505,8 +506,12 @@ class AskService:
                 is_sufficient_evidence=False,
             )
 
-        # Build AskContext as single source of truth
-        ctx = self.build_ask_context(
+        # Build AskContext as single source of truth. Context assembly runs
+        # many synchronous SQLite transactions and, when semantic retrieval is
+        # enabled, CPU-bound embedding inference plus a synchronous vector-store
+        # query, so it must never execute on the event loop.
+        ctx = await asyncio.to_thread(
+            self.build_ask_context,
             question,
             project_id_or_name=project_id_or_name,
             max_evidence=max_evidence,

@@ -226,9 +226,11 @@ class PineconeSemanticIndex:
 
         try:
             return self._ensure_index()
-        except SemanticIndexError:
-            raise
         except Exception as exc:
+            # A missing pinecone package raises SemanticIndexError here. It is
+            # treated as an outage like any other setup failure so that every
+            # method degrades to a no-op consistently, including for callers
+            # that use the index directly rather than through HybridRetriever.
             self._note_outage("setup", exc)
             return None
 
