@@ -98,6 +98,10 @@ def _paper_from_entry(entry: element_tree.Element) -> Paper | None:
     ]
     published = string_or_none(entry.findtext(f"{ATOM}published"))
     year = int(published[:4]) if published and published[:4].isdigit() else None
+    external_ids: dict[str, str] = {"arxiv": arxiv_id}
+    if doi:
+        external_ids["doi"] = doi
+    external_ids["pdf_url"] = f"https://arxiv.org/pdf/{arxiv_id}"
     return Paper(
         id=f"arxiv:{arxiv_id}",
         title=entry_title,
@@ -109,9 +113,7 @@ def _paper_from_entry(entry: element_tree.Element) -> Paper | None:
         url=entry_id,
         citation_count=None,
         source="arxiv",
-        external_ids={
-            key: value for key, value in {"arxiv": arxiv_id, "doi": doi}.items() if value
-        },
+        external_ids=external_ids,
     )
 
 
