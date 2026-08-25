@@ -14,6 +14,8 @@ from research_radar.models.gap import CandidateGap, CriticReview
 from research_radar.models.paper_card import PaperCard
 from research_radar.models.project import Project, ProjectGapLink, ProjectPaperLink
 from research_radar.reader.llm.base import LLMMessage, LLMProvider
+from research_radar.research.hybrid import HybridConfig, HybridRetriever
+from research_radar.semantic.base import EmbeddingProvider, SemanticIndex
 from research_radar.storage.repositories import (
     ResearchRepository,
     StoredPaper,
@@ -243,10 +245,44 @@ class AskService:
         repository: ResearchRepository,
         llm_provider: LLMProvider | None = None,
         budget: AskBudget | None = None,
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+        semantic_index: SemanticIndex | None = None,
+        hybrid_config: HybridConfig | None = None,
     ) -> None:
         self._repository = repository
         self._llm_provider = llm_provider
         self._budget = budget or AskBudget()
+        self._hybrid = HybridRetriever(
+            repository=repository,
+            embedding_provider=embedding_provider,
+            semantic_index=semantic_index,
+            config=hybrid_config,
+        )
+
+    def _semantic_candidate_ranks(
+        self,
+        question: str,
+        *,
+        project_relations: dict[str, str],
+    ) -> dict[str, int]:
+        """Return semantic-only candidate ids mapped to their fused rank.
+
+        Every id is already resolved against SQLite by the retriever, and a
+        semantic outage yields an empty mapping so retrieval degrades to the
+        existing lexical behaviour rather than failing.
+        """
+
+        if not self._hybrid.semantic_available:
+            return {}
+        candidates = self._hybrid.retrieve(
+            question, project_paper_relations=project_relations
+        )
+        return {
+            candidate.paper_id: index
+            for index, candidate in enumerate(candidates, start=1)
+            if candidate.semantic_rank is not None
+        }
 
     def build_ask_context(
         self,
@@ -285,6 +321,22 @@ class AskService:
             if p.id not in candidate_papers_dict:
                 candidate_papers_dict[p.id] = p
 
+        # Semantic candidates widen recall only. They are ranked strictly below
+        # every lexically matched paper below, so the vector index can fill
+        # unused evidence budget but can never displace lexical evidence.
+        semantic_ranks = self._semantic_candidate_ranks(
+            question,
+            project_relations={
+                link.paper_id: link.relation for link in proj_paper_links
+            },
+        )
+        for paper_id in semantic_ranks:
+            if paper_id in candidate_papers_dict:
+                continue
+            resolved = self._repository.get_paper(paper_id)
+            if resolved is not None:
+                candidate_papers_dict[resolved.id] = resolved
+
         # 2. Collect paper cards
         candidate_cards_dict: dict[str, PaperCard] = {}
         for pid in candidate_papers_dict:
@@ -302,6 +354,7 @@ class AskService:
         }
 
         scored_papers: list[tuple[float, StoredPaper]] = []
+        semantic_only_papers: list[tuple[int, StoredPaper]] = []
         for pid, paper in candidate_papers_dict.items():
             card = candidate_cards_dict.get(pid)
             c_tokens: set[str] = set()
@@ -335,8 +388,13 @@ class AskService:
                 (3.0 * title_hits) + (2.0 * abstract_hits) + (1.0 * card_hits) + (1.0 * author_hits)
             )
 
-            # Phase 1 Gate: If lexical_score == 0, exclude paper from evidence retrieval
+            # Phase 1 Gate: a paper with no lexical overlap is not admitted as
+            # ordinary evidence. It may still be carried as a strictly
+            # lower-ranked semantic candidate below, never as a peer of
+            # lexically grounded evidence.
             if lexical_score == 0.0:
+                if pid in semantic_ranks:
+                    semantic_only_papers.append((semantic_ranks[pid], paper))
                 continue
 
             project_boost = 0.0
@@ -347,8 +405,16 @@ class AskService:
             total_score = (lexical_score * 2.0) + project_boost
             scored_papers.append((total_score, paper))
 
-        scored_papers.sort(key=lambda x: x[0], reverse=True)
-        top_papers = [p for _, p in scored_papers[: min(max_evidence, self._budget.max_papers)]]
+        scored_papers.sort(key=lambda x: (-x[0], x[1].id))
+        paper_budget = min(max_evidence, self._budget.max_papers)
+        top_papers = [p for _, p in scored_papers[:paper_budget]]
+
+        # Fill any remaining budget with semantic-only candidates, in semantic
+        # rank order. They never take a slot a lexical match would have used.
+        if len(top_papers) < paper_budget:
+            semantic_only_papers.sort(key=lambda x: (x[0], x[1].id))
+            for _, paper in semantic_only_papers[: paper_budget - len(top_papers)]:
+                top_papers.append(paper)
         top_cards = [
             candidate_cards_dict[p.id] for p in top_papers if p.id in candidate_cards_dict
         ]

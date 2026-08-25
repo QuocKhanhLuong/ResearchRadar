@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from research_radar.artifacts.local import LocalArtifactStore
 from research_radar.bot.client import ResearchRadarBot, create_bot
 from research_radar.bot.notifications import DiscordNotificationSink
 from research_radar.config import Settings, get_settings
@@ -19,16 +20,23 @@ from research_radar.providers.arxiv import ArxivProvider
 from research_radar.providers.base import PaperProvider
 from research_radar.providers.openalex import OpenAlexProvider
 from research_radar.providers.semantic_scholar import SemanticScholarProvider
+from research_radar.reader.cache import DocumentCache
 from research_radar.reader.fetcher import DirectPDFFetcher
 from research_radar.reader.llm.base import LLMProvider
 from research_radar.reader.llm.mock import MockLLMProvider
 from research_radar.reader.llm.remote import RemoteLLMProvider
+from research_radar.reader.llm.telemetry import InMemoryUsageSink
 from research_radar.reader.parser import PDFParser
 from research_radar.reader.service import ReaderService
 from research_radar.research.ask import AskService
+from research_radar.research.ingestion import IngestionService
 from research_radar.research.scout import ScoutService
 from research_radar.research.service import ResearchService
+from research_radar.semantic.base import EmbeddingProvider, SemanticIndex
+from research_radar.semantic.embedding import LocalEmbeddingProvider
+from research_radar.semantic.index import DisabledSemanticIndex, PineconeSemanticIndex
 from research_radar.storage.database import Database
+from research_radar.storage.ingestion_repository import IngestionRepository
 from research_radar.storage.repositories import ResearchRepository
 from research_radar.watch.scheduler import WatchScheduler
 from research_radar.watch.service import WatchService
@@ -47,6 +55,12 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
     db = Database.create(settings.database_url)
     db.initialize_schema()
     repository = ResearchRepository(db)
+    ingestion_repository = IngestionRepository(db)
+    artifact_store = LocalArtifactStore(settings.artifact_root_path())
+    document_cache = DocumentCache(
+        store=artifact_store,
+        ingestion_repository=ingestion_repository,
+    )
 
     http_client = httpx.AsyncClient(timeout=httpx.Timeout(settings.http_timeout_seconds))
 
@@ -79,6 +93,7 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
     research_service = ResearchService(scout)
 
     llm: LLMProvider
+    usage_sink = InMemoryUsageSink()
     if (
         settings.llm_provider == "remote"
         and settings.llm_base_url
@@ -95,9 +110,14 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
             api_key=llm_api_key,
             client=http_client,
             timeout_seconds=settings.http_timeout_seconds,
+            usage_sink=usage_sink,
+            provider_name=settings.llm_provider,
         )
     else:
         llm = MockLLMProvider()
+
+    embedding_provider = _build_embedding_provider(settings)
+    semantic_index = _build_semantic_index(settings)
 
     fetcher = DirectPDFFetcher(client=http_client)
     parser = PDFParser()
@@ -108,6 +128,7 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
         repository=repository,
         llm_provider_name=settings.llm_provider,
         llm_model=settings.llm_model,
+        document_cache=document_cache,
     )
 
     notification_sink: DiscordNotificationSink | None = None
@@ -141,7 +162,19 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
     digest_scheduler.register()
 
     gap_service = GapService(repository=repository, scout=scout)
-    ask_service = AskService(repository=repository, llm_provider=llm)
+    ask_service = AskService(
+        repository=repository,
+        llm_provider=llm,
+        embedding_provider=embedding_provider,
+        semantic_index=semantic_index,
+    )
+    ingestion_service = IngestionService(
+        scout=scout,
+        repository=repository,
+        ingestion_repository=ingestion_repository,
+        reader_service=reader_service,
+        metadata_limit=settings.ingestion_metadata_limit,
+    )
 
     bot: ResearchRadarBot | None = None
 
@@ -155,6 +188,7 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
         if apscheduler.running:
             apscheduler.shutdown(wait=False)
         await http_client.aclose()
+        db.dispose()
 
     bot = create_bot(
         settings,
@@ -167,8 +201,44 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
         gap_service=gap_service,
         project_service=repository,
         ask_service=ask_service,
+        ingestion_service=ingestion_service,
     )
     return bot
+
+
+
+def _build_embedding_provider(settings: Settings) -> EmbeddingProvider | None:
+    """Return a configured embedding provider, or None when embeddings are off.
+
+    The local backend loads its model lazily, so constructing it here neither
+    imports sentence-transformers nor downloads anything.
+    """
+
+    if settings.embedding_provider != "local":
+        return None
+    return LocalEmbeddingProvider(model_id=settings.embedding_model)
+
+
+def _build_semantic_index(settings: Settings) -> SemanticIndex:
+    """Return the derived semantic index, defaulting to a total no-op.
+
+    Pinecone is optional and derived. When it is not fully configured the
+    application keeps working on lexical retrieval alone.
+    """
+
+    if settings.semantic_index != "pinecone":
+        return DisabledSemanticIndex()
+    if settings.pinecone_api_key is None or not settings.pinecone_index:
+        logger.warning(
+            "SEMANTIC_INDEX=pinecone requires PINECONE_API_KEY and PINECONE_INDEX; "
+            "continuing with semantic retrieval disabled."
+        )
+        return DisabledSemanticIndex()
+    return PineconeSemanticIndex(
+        api_key=settings.pinecone_api_key.get_secret_value(),
+        index_name=settings.pinecone_index,
+        namespace=settings.pinecone_namespace,
+    )
 
 
 def main() -> None:
