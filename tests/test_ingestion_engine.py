@@ -452,3 +452,43 @@ async def test_provider_retrieval_rows_only_record_their_own_provider_ids(
         assert row.external_ids == [expected[provider]]
         foreign = {value for name, value in expected.items() if name != provider}
         assert not foreign.intersection(row.external_ids)
+
+
+async def test_project_name_is_resolved_to_a_storage_id(
+    build_stack: StackBuilder,
+    database: Database,
+) -> None:
+    """A project NAME must be resolved before the run records a foreign key."""
+
+    papers = shared_doi_papers()
+    service, repository, ingestion_repository = build_stack(
+        [FakeProvider("openalex", [papers[0]])]
+    )
+    project = repository.create_project(name="Sparse Experts Review")
+
+    result = await service.ingest_research_topic(
+        "sparse experts", project_id="Sparse Experts Review"
+    )
+
+    run_record = ingestion_repository.list_recent_runs()[0]
+    assert run_record.status == "completed"
+    assert run_record.project_id == project.id
+    assert [link.paper_id for link in repository.list_project_papers(project.id)] == (
+        result.paper_ids
+    )
+
+
+async def test_unknown_project_fails_before_a_run_is_created(
+    build_stack: StackBuilder,
+    database: Database,
+) -> None:
+    """An unknown project is rejected loudly rather than opening a doomed run."""
+
+    papers = shared_doi_papers()
+    service, _, ingestion_repository = build_stack([FakeProvider("openalex", [papers[0]])])
+
+    with pytest.raises(ValueError, match="not found"):
+        await service.ingest_research_topic("sparse experts", project_id="no-such-project")
+
+    assert ingestion_repository.count_ingestion_runs() == 0
+    assert count_rows(database, "papers") == 0

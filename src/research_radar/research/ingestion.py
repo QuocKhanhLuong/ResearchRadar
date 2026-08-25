@@ -77,13 +77,14 @@ class IngestionService:
             raise ValueError("auto_read cannot be negative.")
         clamped_auto_read = min(auto_read, _MAX_AUTO_READ)
         provider_names = list(self._scout.provider_names)
+        resolved_project_id = await self._resolve_project_id(project_id)
 
         run = await asyncio.to_thread(
             self._ingestion_repository.start_ingestion_run,
             query=normalized_query,
             requested_limit=clamped_limit,
             providers=provider_names,
-            project_id=project_id,
+            project_id=resolved_project_id,
         )
         try:
             raw = await self._scout.search(normalized_query, clamped_limit)
@@ -97,8 +98,8 @@ class IngestionService:
                     await asyncio.to_thread(self._repository.upsert_merged_paper, entry.paper)
                 )
             warnings = list(raw.warnings)
-            if project_id is not None:
-                await self._link_papers_to_project(project_id, paper_ids, warnings)
+            if resolved_project_id is not None:
+                await self._link_papers_to_project(resolved_project_id, paper_ids, warnings)
             read_paper_ids = await self._auto_read_canonical_papers(
                 canonical, paper_ids, clamped_auto_read, warnings
             )
@@ -126,6 +127,22 @@ class IngestionService:
             provider_counts=dict(raw.provider_counts),
             read_paper_ids=read_paper_ids,
         )
+
+    async def _resolve_project_id(self, project_id_or_name: str | None) -> str | None:
+        """Resolve a project reference to its storage id before the run opens.
+
+        ``ingestion_runs.project_id`` is a foreign key, so a user-supplied
+        project NAME has to become an id first. Resolving up front also fails
+        an unknown project loudly instead of opening a run that cannot be
+        linked to anything.
+        """
+
+        if project_id_or_name is None:
+            return None
+        project = await asyncio.to_thread(self._repository.get_project, project_id_or_name)
+        if project is None:
+            raise ValueError(f"Project '{project_id_or_name}' was not found.")
+        return project.id
 
     async def _record_provider_retrievals(
         self,
