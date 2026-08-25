@@ -10,12 +10,18 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from research_radar.artifacts.local import LocalArtifactStore
 from research_radar.bot.client import ResearchRadarBot, create_bot
+from research_radar.bot.commands.memory import register_memory_commands
 from research_radar.bot.notifications import DiscordNotificationSink
+from research_radar.chat.router import ChatRouter
+from research_radar.chat.service import ChatBudget, ChatService
 from research_radar.config import Settings, get_settings
 from research_radar.digest.scheduler import DigestScheduler
 from research_radar.digest.service import DigestService
 from research_radar.gap.service import GapService
 from research_radar.logging import configure_logging
+from research_radar.memory.base import UserMemoryStore
+from research_radar.memory.capture import MemoryCapturePolicy
+from research_radar.memory.disabled import DisabledUserMemoryStore
 from research_radar.providers.arxiv import ArxivProvider
 from research_radar.providers.base import PaperProvider
 from research_radar.providers.openalex import OpenAlexProvider
@@ -176,6 +182,19 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
         metadata_limit=settings.ingestion_metadata_limit,
     )
 
+    user_memory = _build_user_memory_store(settings)
+    chat_service = ChatService(
+        repository=repository,
+        router=ChatRouter(llm_provider=llm),
+        user_memory=user_memory,
+        capture_policy=MemoryCapturePolicy(enabled=settings.user_memory_capture),
+        llm_provider=llm,
+        ingestion_service=ingestion_service,
+        embedding_provider=embedding_provider,
+        semantic_index=semantic_index,
+        budget=ChatBudget(max_discovery_results=settings.chat_live_discovery_limit),
+    )
+
     bot: ResearchRadarBot | None = None
 
     async def on_startup() -> None:
@@ -187,6 +206,7 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
     async def on_shutdown() -> None:
         if apscheduler.running:
             apscheduler.shutdown(wait=False)
+        await user_memory.close()
         await http_client.aclose()
         db.dispose()
 
@@ -202,9 +222,26 @@ def build_application_bot(settings: Settings | None = None) -> ResearchRadarBot:
         project_service=repository,
         ask_service=ask_service,
         ingestion_service=ingestion_service,
+        chat_service=chat_service,
     )
+    register_memory_commands(bot.tree, user_memory, settings)
     return bot
 
+
+
+def _build_user_memory_store(settings: Settings) -> UserMemoryStore:
+    """Return the personal-memory backend, defaulting to a total no-op.
+
+    Personal memory is optional. ``USER_MEMORY_BACKEND=disabled`` (the default)
+    keeps chat fully functional, and an unimportable Graphiti install degrades
+    to the same disabled store rather than failing startup.
+    """
+
+    if settings.user_memory_backend != "graphiti":
+        return DisabledUserMemoryStore()
+    from research_radar.memory.graphiti_store import GraphitiUserMemoryStore
+
+    return GraphitiUserMemoryStore(settings)
 
 
 def _build_embedding_provider(settings: Settings) -> EmbeddingProvider | None:
