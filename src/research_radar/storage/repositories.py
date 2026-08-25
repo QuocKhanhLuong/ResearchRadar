@@ -1708,6 +1708,13 @@ def _copy_card_row(target: PaperCardTable, source: PaperCardTable) -> None:
     target.updated_at = source.updated_at
 
 
+# Entries in ``Paper.external_ids`` that locate a document rather than identify
+# the publication. They must never become PaperSource rows: a PDF location is
+# not a provider identity, and treating it as one both pollutes provenance and
+# risks merging two papers that happen to share a hosting URL.
+_NON_IDENTITY_EXTERNAL_IDS = frozenset({"pdf_url"})
+
+
 def _paper_source_pairs(paper: Paper) -> tuple[tuple[str, str], ...]:
     pairs: list[tuple[str, str]] = []
     primary_provider = _normalize_provider(paper.source)
@@ -1717,6 +1724,8 @@ def _paper_source_pairs(paper: Paper) -> tuple[tuple[str, str], ...]:
 
     for provider, external_id in paper.external_ids.items():
         normalized_provider = _normalize_provider(provider)
+        if normalized_provider in _NON_IDENTITY_EXTERNAL_IDS:
+            continue
         normalized_id = _normalize_external_id(normalized_provider, external_id)
         if normalized_id:
             pairs.append((normalized_provider, normalized_id))

@@ -49,6 +49,26 @@ def normalize_arxiv_id(value: object) -> str | None:
     return cleaned or None
 
 
+def normalize_bare_identifier(value: object) -> str | None:
+    """Reduce a URL-shaped identifier to its bare trailing identifier.
+
+    Several providers express identifiers as resolver URLs - OpenAlex returns
+    ``pmid`` as ``https://pubmed.ncbi.nlm.nih.gov/20304721``. Persisting the URL
+    would make the same publication look like two different identities
+    depending on which provider supplied it, so the bare form is stored.
+    """
+
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().rstrip("/")
+    if not cleaned:
+        return None
+    parsed = urlsplit(cleaned)
+    if parsed.scheme and parsed.netloc:
+        cleaned = parsed.path.strip("/").rsplit("/", maxsplit=1)[-1]
+    return cleaned or None
+
+
 def known_external_ids(values: Mapping[str, Any] | None) -> dict[str, str]:
     """Keep only stable, scalar external IDs from an upstream identifier mapping."""
 
@@ -67,6 +87,8 @@ def known_external_ids(values: Mapping[str, Any] | None) -> dict[str, str]:
             identifier = normalize_doi(identifier) or ""
         elif name == "arxiv":
             identifier = normalize_arxiv_id(identifier) or ""
+        else:
+            identifier = normalize_bare_identifier(identifier) or ""
         if identifier:
             normalized[name] = identifier
     return normalized

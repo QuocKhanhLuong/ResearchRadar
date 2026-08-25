@@ -492,3 +492,99 @@ async def test_unknown_project_fails_before_a_run_is_created(
 
     assert ingestion_repository.count_ingestion_runs() == 0
     assert count_rows(database, "papers") == 0
+
+
+def test_pdf_url_never_becomes_a_provider_identity(database: Database) -> None:
+    """A document location must not be persisted as a provider identity.
+
+    OpenAlex and arXiv both expose a PDF URL through external_ids so the reader
+    can fetch a document later. Treating it as an identity would pollute
+    provenance and could merge two unrelated papers sharing a hosting URL.
+    """
+
+    repository = ResearchRepository(database)
+    paper_id = repository.upsert_merged_paper(
+        Paper(
+            id="openalex:W1",
+            title="Robust reconstruction under scanner shift",
+            doi="10.1000/pdfcheck",
+            source="openalex",
+            external_ids={
+                "openalex": "W1",
+                "doi": "10.1000/pdfcheck",
+                "pdf_url": "https://example.test/paper.pdf",
+            },
+        )
+    )
+
+    providers = {source.provider for source in repository.list_paper_sources(paper_id)}
+
+    assert "pdf_url" not in providers
+    assert {"openalex", "doi"} <= providers
+
+
+def test_url_shaped_identifiers_are_stored_bare(database: Database) -> None:
+    """A resolver URL identifier must collapse to its bare form.
+
+    OpenAlex returns pmid as a pubmed.ncbi.nlm.nih.gov URL. Storing the URL
+    would make the same publication look like two identities depending on which
+    provider supplied it, defeating cross-provider deduplication.
+    """
+
+    repository = ResearchRepository(database)
+    from research_radar.providers.normalization import known_external_ids
+
+    normalized = known_external_ids(
+        {
+            "pmid": "https://pubmed.ncbi.nlm.nih.gov/20529730",
+            "pmcid": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3170773",
+            "doi": "https://doi.org/10.1000/Bare",
+        }
+    )
+    assert normalized["pmid"] == "20529730"
+    assert normalized["pmcid"] == "PMC3170773"
+    assert normalized["doi"] == "10.1000/bare"
+
+    paper_id = repository.upsert_merged_paper(
+        Paper(
+            id="openalex:W2",
+            title="Sensitivity encoding for fast imaging",
+            doi="10.1000/bare",
+            source="openalex",
+            external_ids={"openalex": "W2", **normalized},
+        )
+    )
+    sources = {s.provider: s.external_id for s in repository.list_paper_sources(paper_id)}
+    assert sources["pmid"] == "20529730"
+
+
+def test_same_publication_from_two_providers_merges_despite_url_shaped_pmid(
+    database: Database,
+) -> None:
+    """A bare and a URL-shaped pmid must resolve to the same canonical paper."""
+
+    from research_radar.providers.normalization import known_external_ids
+
+    repository = ResearchRepository(database)
+    first = repository.upsert_merged_paper(
+        Paper(
+            id="semantic_scholar:S1",
+            title="Compressed sensing for rapid imaging",
+            source="semantic_scholar",
+            external_ids={"semantic_scholar": "S1", **known_external_ids({"pmid": "17969013"})},
+        )
+    )
+    second = repository.upsert_merged_paper(
+        Paper(
+            id="openalex:W3",
+            title="Compressed sensing for rapid imaging",
+            source="openalex",
+            external_ids={
+                "openalex": "W3",
+                **known_external_ids({"pmid": "https://pubmed.ncbi.nlm.nih.gov/17969013"}),
+            },
+        )
+    )
+
+    assert first == second
+    assert count_rows(database, "papers") == 1
