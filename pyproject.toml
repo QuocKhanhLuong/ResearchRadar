@@ -35,6 +35,13 @@ embeddings = [
 pinecone = [
     "pinecone>=5.0",
 ]
+# Personal temporal-memory graph (Graphiti over embedded Kuzu). Optional:
+# USER_MEMORY_BACKEND=disabled is the default and the application is fully
+# functional without it.
+memory = [
+    "graphiti-core>=0.29,<0.30",
+    "kuzu>=0.11,<0.12",
+]
 
 [project.scripts]
 research-radar = "research_radar.main:main"
