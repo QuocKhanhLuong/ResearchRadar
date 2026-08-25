@@ -102,6 +102,14 @@ or API key.
 | `LLM_BASE_URL` | With a remote LLM | — | Base URL for an OpenAI-compatible chat-completions endpoint. |
 | `LLM_API_KEY` | Endpoint-dependent | — | Optional bearer credential for the remote endpoint. |
 | `HTTP_TIMEOUT_SECONDS` | No | `20` | Bounded timeout for external HTTP requests. |
+| `ARTIFACT_ROOT` | No | `data/artifacts` | Root directory for content-addressed PDF, text, and section artifacts. |
+| `INGESTION_METADATA_LIMIT` | No | `50` | Upper bound on papers stored by one `/ingest` run. |
+| `EMBEDDING_PROVIDER` | No | `disabled` | `disabled` or `local`. `local` needs the `embeddings` extra and loads its model lazily. |
+| `EMBEDDING_MODEL` | No | `sentence-transformers/all-MiniLM-L6-v2` | Sentence-transformer model used for derived vectors. |
+| `SEMANTIC_INDEX` | No | `disabled` | `disabled` or `pinecone`. Pinecone is a derived, rebuildable index and needs the `pinecone` extra. |
+| `PINECONE_API_KEY` | With Pinecone | — | Credential for the derived semantic index. |
+| `PINECONE_INDEX` | With Pinecone | — | Pinecone index name. |
+| `PINECONE_NAMESPACE` | No | `research-radar` | Namespace within the Pinecone index. |
 
 Scholarly credentials are optional where providers permit anonymous access.
 They can improve rate limits or availability but are not needed to install or
@@ -136,6 +144,7 @@ Message Content Intent.
 | `/digest` | Renders a recent digest from stored discoveries only; it does not run a new provider search. |
 | `/gap topic:<text> [type:explicit|coverage|evaluation] [count]` | Mines candidate explicit, coverage, or evaluation research gaps from attributable PaperCards and validates them with a bounded Critic re-search loop. |
 | `/gap-show id:<candidate-id>` | Displays candidate gap details, evidence statements, search scope, caveats, and Critic audit history. |
+| `/ingest query:<text> [count] [project]` | Discovers papers across providers, deduplicates them into canonical records with per-provider provenance, and stores them. Never triggers LLM reads. |
 
 ### `/read` limitation and LLM behavior
 
@@ -226,3 +235,6 @@ LLM, a scheduled digest, and SQLite persistence across a restart.
 - [Provider and runtime contracts](docs/research/provider-and-runtime-contracts-v1.md)
 - [V1 acceptance strategy](docs/strategies/researchradar-v1-acceptance-strategy.md)
 - [Future Gap Engine V2](docs/GAP_ENGINE_V2.md)
+- [Research data foundation](docs/RESEARCH_DATA_FOUNDATION.md) — storage
+  ownership, ingestion, dedup, artifact cache, embeddings, Pinecone semantics,
+  hybrid retrieval, reindex, and backup/restore
