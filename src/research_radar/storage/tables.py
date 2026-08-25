@@ -301,3 +301,90 @@ class ProjectGapTable(Base):
     project: Mapped[ProjectTable] = relationship(back_populates="gaps")
     candidate: Mapped[GapCandidateTable] = relationship()
 
+
+
+class DocumentArtifactTable(Base):
+    """Relational index of content-addressed document artifacts on local disk.
+
+    Bytes never live in SQLite. This table records where an artifact is and how
+    it was derived, so a stored artifact can be resolved deterministically.
+    """
+
+    __tablename__ = "document_artifacts"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "paper_id",
+            "sha256",
+            "artifact_type",
+            name="uq_document_artifacts_identity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    paper_id: Mapped[str] = mapped_column(
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    artifact_type: Mapped[str] = mapped_column(String(32), index=True)
+    backend: Mapped[str] = mapped_column(String(32), default="local")
+    object_key: Mapped[str] = mapped_column(Text)
+    mime_type: Mapped[str] = mapped_column(String(128))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class IngestionRunTable(Base):
+    """One bounded discovery run and its aggregate, non-sensitive outcome."""
+
+    __tablename__ = "ingestion_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    query: Mapped[str] = mapped_column(Text)
+    normalized_query: Mapped[str] = mapped_column(String(1000), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    requested_limit: Mapped[int] = mapped_column(Integer, default=0)
+    discovered_count: Mapped[int] = mapped_column(Integer, default=0)
+    canonical_count: Mapped[int] = mapped_column(Integer, default=0)
+    providers: Mapped[list[str]] = mapped_column(JSON, default=list)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    safe_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    retrievals: Mapped[list[ProviderRetrievalTable]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ProviderRetrievalTable(Base):
+    """Per-provider provenance for one ingestion run.
+
+    Only normalized external identifiers and a safe error summary are stored.
+    Credentials, auth headers and raw provider payloads are never persisted.
+    """
+
+    __tablename__ = "provider_retrievals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("ingestion_runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(64), index=True)
+    query: Mapped[str] = mapped_column(Text)
+    external_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    result_count: Mapped[int] = mapped_column(Integer, default=0)
+    safe_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    run: Mapped[IngestionRunTable] = relationship(back_populates="retrievals")

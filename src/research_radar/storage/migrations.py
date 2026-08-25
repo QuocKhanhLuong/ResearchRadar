@@ -57,3 +57,10 @@ def run_migrations(engine: Engine) -> None:
                 )
 
         conn.execute(text("INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);"))
+
+        # Version 2 introduced document_artifacts, ingestion_runs and
+        # provider_retrievals. Those tables are created declaratively by
+        # ``Base.metadata.create_all``, which is additive and safe on an
+        # existing database, so this marker only records that the running
+        # schema is expected to contain them.
+        conn.execute(text("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);"))

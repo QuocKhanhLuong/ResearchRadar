@@ -19,3 +19,4 @@ data/*.db-*
 .agenteam/
 .codex/
 
+.DS_Store

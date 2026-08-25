@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, SecretStr, field_validator
@@ -41,6 +42,38 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     http_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
 
+    artifact_root: str = "data/artifacts"
+
+    embedding_provider: str = "disabled"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+    semantic_index: str = "disabled"
+    pinecone_api_key: SecretStr | None = None
+    pinecone_index: str | None = None
+    pinecone_namespace: str = "research-radar"
+
+    ingestion_metadata_limit: int = Field(default=50, ge=1, le=200)
+
+    @field_validator("embedding_provider")
+    @classmethod
+    def validate_embedding_provider(cls, value: str) -> str:
+        """Reject unknown embedding backends before any service is composed."""
+
+        normalized = value.strip().casefold()
+        if normalized not in {"disabled", "local"}:
+            raise ValueError("EMBEDDING_PROVIDER must be one of: disabled, local")
+        return normalized
+
+    @field_validator("semantic_index")
+    @classmethod
+    def validate_semantic_index(cls, value: str) -> str:
+        """Reject unknown semantic index backends before any service is composed."""
+
+        normalized = value.strip().casefold()
+        if normalized not in {"disabled", "pinecone"}:
+            raise ValueError("SEMANTIC_INDEX must be one of: disabled, pinecone")
+        return normalized
+
     @field_validator("timezone")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
@@ -51,6 +84,11 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as error:
             raise ValueError(f"Unknown IANA timezone: {value}") from error
         return value
+
+    def artifact_root_path(self) -> Path:
+        """Return the artifact root as an absolute path without creating it."""
+
+        return Path(self.artifact_root).expanduser().resolve()
 
     def require_discord_token(self) -> str:
         """Return the token only for the explicit bot-launch path."""
