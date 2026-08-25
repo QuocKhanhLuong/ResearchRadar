@@ -270,6 +270,27 @@ class ResearchRepository:
             ).all()
             return [_to_paper_source(row) for row in rows]
 
+    def find_paper_id_by_source(self, provider: str, external_id: str) -> str | None:
+        """Resolve a canonical paper id from one provider identity, or ``None``.
+
+        This is a pure lookup. It exists so a caller that only needs to know
+        whether a paper is already known - the reader resolving artifact keys
+        before it has parsed a document, for instance - can ask without
+        inserting a placeholder row into canonical storage.
+        """
+
+        normalized_provider = _normalize_provider(provider)
+        normalized_id = _normalize_external_id(normalized_provider, external_id)
+        if not normalized_id:
+            return None
+        with self._session_scope() as session:
+            return session.scalar(
+                select(PaperSourceTable.paper_id).where(
+                    PaperSourceTable.provider == normalized_provider,
+                    PaperSourceTable.external_id == normalized_id,
+                )
+            )
+
     def get_papers_for_local_lexical_search(self, query: str, limit: int = 20) -> list[StoredPaper]:
         """Return compact local metadata matches without an external search.
 
