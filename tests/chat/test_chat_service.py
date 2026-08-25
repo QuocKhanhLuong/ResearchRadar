@@ -116,7 +116,9 @@ class ScriptedChatLLM:
     well-behaved model that only cites listed evidence.
     """
 
-    _EVIDENCE_ID_RE = re.compile(r"(?m)^\[([^\]]+)\]")
+    # The integrated prompt builder (research_radar.chat.prompt) labels
+    # evidence blocks with the established /ask convention.
+    _EVIDENCE_ID_RE = re.compile(r"(?m)^--- Paper (\S+) ---$")
 
     def __init__(
         self,

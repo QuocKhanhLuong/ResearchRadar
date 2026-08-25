@@ -46,17 +46,16 @@ pytest.importorskip("research_radar.chat.evidence")
 pytest.importorskip("research_radar.chat.service")
 
 import research_radar.chat.evidence as chat_evidence  # noqa: E402
-import research_radar.chat.service as chat_service  # noqa: E402
-
 import research_radar.chat.models as chat_models  # noqa: E402
 import research_radar.chat.prompt as chat_prompt  # noqa: E402
 import research_radar.chat.router as chat_router  # noqa: E402
+import research_radar.chat.service as chat_service  # noqa: E402
 import research_radar.memory.capture as memory_capture  # noqa: E402
 import research_radar.memory.disabled as memory_disabled  # noqa: E402
 import research_radar.memory.fakes as memory_fakes  # noqa: E402
 import research_radar.memory.models as memory_models  # noqa: E402
 
-ChatBudget = chat_models.ChatBudget
+ChatBudget = chat_service.ChatBudget
 ChatMode = chat_models.ChatMode
 ChatRequest = chat_models.ChatRequest
 ChatResponse = chat_models.ChatResponse
@@ -1020,13 +1019,26 @@ async def test_memory_status_output_hides_credentials_and_graph_internals(
         lowered = name.lower()
         if not any(tag in lowered for tag in ("format", "render", "line", "text")):
             continue
+        # The module renders two different shapes (statuses and facts). Feed
+        # each renderer both, and skip the combinations it does not accept:
+        # duck-typed rejection surfaces as AttributeError, not just TypeError.
+        credential_fact = MemoryFact(
+            fact=f"planted credential {planted['LLM_API_KEY']}",
+            memory_class=MemoryClass.PREFERENCE,
+        )
+        candidates: list[object] = [credential_fact]
         for store in stores:
-            status = await store.status()  # type: ignore[attr-defined]
+            candidates.append(await store.status())  # type: ignore[attr-defined]
+        for candidate in candidates:
             try:
-                rendered = str(value(status))
-            except TypeError:
+                rendered = str(value(candidate))
+            except (TypeError, AttributeError, ValueError):
                 continue
             for credential in planted.values():
+                if candidate is credential_fact and credential in str(candidate):
+                    # A fact renderer is expected to echo the fact it was
+                    # handed; the boundary under test is that nothing else does.
+                    continue
                 assert credential not in rendered, (
                     f"{commands_module.__name__}.{name} leaked a credential"
                 )

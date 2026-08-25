@@ -129,11 +129,19 @@ _MEMORY_QUESTION_RES = (
     re.compile(
         r"\bwhat\s+(?:research\s+)?(?:areas?|topics?|fields?|directions?)\s+do\s+i\b", re.I
     ),
-    re.compile(r"\bmy\s+interests?\b", re.I),
-    re.compile(r"\bmy\s+preferences?\b", re.I),
+    # First-person possessives, allowing one qualifier between "my" and the
+    # noun so "my research interests" and "my previous preferences" are caught
+    # as readily as the bare "my interests".
+    re.compile(
+        r"\bmy\s+(?:\w+\s+){0,2}?"
+        r"(?:interests?|preferences?|goals?|priorities|constraints?"
+        r"|directions?|topics?|areas?|decisions?)\b",
+        re.I,
+    ),
     re.compile(r"\bremember\b", re.I),
     re.compile(r"\bwhat\s+am\s+i\s+working\s+on\b", re.I),
     re.compile(r"\bwhat\s+do\s+i\s+(?:care\s+about|like|prefer)\b", re.I),
+    re.compile(r"\bwhat\s+do\s+you\s+know\s+about\s+(?:me|my)\b", re.I),
 )
 
 _MY_PROJECT_RE = re.compile(
@@ -340,7 +348,15 @@ def _route_deterministic(request: ChatRequest) -> tuple[RouteDecision, bool]:
             True,
         )
 
-    if _matches_any(_MEMORY_QUESTION_RES, text):
+    # A message can carry both signals ("find papers about my research
+    # interests"). Research intent then wins the mode, but the personal signal
+    # still turns memory retrieval on so the answer can be framed by context.
+    memory_question = _matches_any(_MEMORY_QUESTION_RES, text)
+    research_intent = bool(
+        _RESEARCH_IMPERATIVE_RE.match(text) or _matches_any(_RESEARCH_CUE_RES, text)
+    )
+
+    if memory_question and not research_intent:
         return (
             RouteDecision(
                 mode=ChatMode.PERSONAL_MEMORY,
@@ -366,11 +382,11 @@ def _route_deterministic(request: ChatRequest) -> tuple[RouteDecision, bool]:
             True,
         )
 
-    if _RESEARCH_IMPERATIVE_RE.match(text) or _matches_any(_RESEARCH_CUE_RES, text):
+    if research_intent:
         return (
             RouteDecision(
                 mode=ChatMode.RESEARCH_STORED,
-                needs_user_memory=False,
+                needs_user_memory=memory_question,
                 needs_stored_research=True,
                 allows_live_discovery=True,
                 search_query=normalize_search_query(text),

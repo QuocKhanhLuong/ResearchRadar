@@ -43,6 +43,7 @@ from research_radar.chat.evidence import (
     validate_cited_ids,
 )
 from research_radar.chat.models import ChatMode, ChatRequest, ChatResponse
+from research_radar.chat.prompt import build_chat_prompt
 from research_radar.chat.router import ChatRouter, RouteDecision
 from research_radar.memory.base import UserMemoryStore
 from research_radar.memory.capture import MemoryCapturePolicy
@@ -160,89 +161,13 @@ def _card_summary(card: PaperCard | None) -> str | None:
     return _clip(joined, _MAX_CARD_SUMMARY_CHARS) or None
 
 
-def _fallback_chat_prompt(
-    request: ChatRequest,
-    decision: RouteDecision,
-    packet: EvidencePacket,
-) -> list[LLMMessage]:
-    """Build a minimal bounded prompt locally until W8 lands.
-
-    TODO(prompt): owned by W8 - replace this fallback with
-    ``research_radar.chat.prompt.build_chat_prompt`` at integration; the
-    coordinator will remove this function.
-    """
-
-    sections: list[str] = []
-    if packet.user_memory.available:
-        facts = [
-            f"- {_clip(fact.fact, _MAX_PROMPT_FIELD_CHARS)}"
-            for fact in packet.user_memory.facts[:_MAX_PROMPT_FACTS]
-        ]
-        sections.append(
-            "USER MEMORY (ADVISORY - NOT SCIENTIFIC EVIDENCE)\n" + "\n".join(facts)
-        )
-    if packet.project is not None:
-        lines = [f"Name: {packet.project.name}"]
-        if packet.project.constraints:
-            lines.append(f"Constraints: {'; '.join(packet.project.constraints)}")
-        if packet.project.hypotheses:
-            lines.append(f"Hypotheses: {'; '.join(packet.project.hypotheses)}")
-        if packet.project.rejected_ideas:
-            lines.append(
-                "REJECTED IDEAS (do not recommend as new): "
-                + "; ".join(packet.project.rejected_ideas)
-            )
-        sections.append(
-            "EXPLICIT PROJECT MEMORY (CANONICAL USER/PROJECT STATE)\n"
-            + "\n".join(_clip(line, _MAX_PROMPT_FIELD_CHARS) or "" for line in lines).rstrip()
-        )
-    if packet.stored:
-        blocks = []
-        for item in packet.stored:
-            lines = [f"[{item.paper_id}] {item.title} ({item.year}, {item.venue})"]
-            abstract = _clip(item.abstract, _MAX_PROMPT_FIELD_CHARS)
-            if abstract:
-                lines.append(f"Abstract: {abstract}")
-            if item.has_paper_card and item.card_summary:
-                lines.append(f"PaperCard summary: {item.card_summary}")
-            else:
-                lines.append("PaperCard: not available (metadata/abstract only)")
-            blocks.append("\n".join(lines))
-        sections.append("STORED SCIENTIFIC EVIDENCE (CANONICAL)\n" + "\n\n".join(blocks))
-    if packet.discovery:
-        blocks = []
-        for item in packet.discovery:
-            lines = [f"[{item.paper_id}] {item.title} ({item.year}, {item.venue})"]
-            abstract = _clip(item.abstract, _MAX_PROMPT_FIELD_CHARS)
-            if abstract:
-                lines.append(f"Abstract: {abstract}")
-            blocks.append("\n".join(lines))
-        sections.append(
-            "LIVE DISCOVERY EVIDENCE (METADATA/ABSTRACT-LEVEL ONLY)\n"
-            + "\n\n".join(blocks)
-        )
-    if packet.gap_ids:
-        sections.append("CANDIDATE GAP IDS\n" + ", ".join(packet.gap_ids))
-    sections.append(f"QUESTION\n{request.text.strip()}")
-    return [
-        LLMMessage(role="system", content=_SYSTEM_RULES),
-        LLMMessage(role="user", content="\n\n".join(sections)),
-    ]
-
-
 def _build_chat_messages(
     request: ChatRequest,
     decision: RouteDecision,
     packet: EvidencePacket,
 ) -> list[LLMMessage]:
-    """Delegate prompt construction to W8's module, falling back locally."""
+    """Delegate prompt construction to the bounded chat prompt builder."""
 
-    # TODO(prompt): W8 owns research_radar.chat.prompt; imported defensively at
-    # call time so this service works in worktrees where W8 has not landed.
-    try:
-        from research_radar.chat.prompt import build_chat_prompt
-    except ImportError:
-        return _fallback_chat_prompt(request, decision, packet)
     return build_chat_prompt(request, decision, packet)
 
 
