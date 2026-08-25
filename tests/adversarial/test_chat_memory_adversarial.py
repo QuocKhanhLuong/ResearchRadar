@@ -41,14 +41,16 @@ from research_radar.storage.ingestion_repository import IngestionRepository
 from research_radar.storage.repositories import ResearchRepository
 from research_radar.storage.tables import PaperTable
 
-pytest.importorskip("research_radar.memory")
-pytest.importorskip("research_radar.chat")
+pytest.importorskip("research_radar.memory.capture")
+pytest.importorskip("research_radar.chat.evidence")
+pytest.importorskip("research_radar.chat.service")
 
 import research_radar.chat.evidence as chat_evidence  # noqa: E402
+import research_radar.chat.service as chat_service  # noqa: E402
+
 import research_radar.chat.models as chat_models  # noqa: E402
 import research_radar.chat.prompt as chat_prompt  # noqa: E402
 import research_radar.chat.router as chat_router  # noqa: E402
-import research_radar.chat.service as chat_service  # noqa: E402
 import research_radar.memory.capture as memory_capture  # noqa: E402
 import research_radar.memory.disabled as memory_disabled  # noqa: E402
 import research_radar.memory.fakes as memory_fakes  # noqa: E402
