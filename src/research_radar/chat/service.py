@@ -378,6 +378,11 @@ class ChatService:
         seeded into the budget at composition time), and ``auto_read`` is always
         0: mention chat never reads full PDFs automatically. Returned canonical
         ids are re-resolved from SQLite before they count as evidence.
+
+        Ingestion applies its ``limit`` PER PROVIDER and concatenates, so the
+        request is divided by the provider count to keep the TOTAL discovered
+        set inside the per-turn bound; the resolved evidence is truncated to
+        the same bound as a second line of defence.
         """
 
         if (
@@ -388,10 +393,12 @@ class ChatService:
         ):
             return (), False
         limit = max(1, min(self._budget.max_discovery_results, _HARD_MAX_DISCOVERY_RESULTS))
+        providers = max(1, getattr(self._ingestion_service, "provider_count", 1))
+        per_provider = max(1, -(-limit // providers))
         try:
             result = await self._ingestion_service.ingest_research_topic(
                 decision.search_query,
-                limit=limit,
+                limit=per_provider,
                 auto_read=0,
             )
         except Exception as exc:
@@ -401,7 +408,7 @@ class ChatService:
             )
             return (), False
         items = await asyncio.to_thread(self._resolve_discovery_items, result.paper_ids)
-        return items, bool(items)
+        return items[:limit], bool(items)
 
     def _resolve_discovery_items(
         self, paper_ids: list[str]

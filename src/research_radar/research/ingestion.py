@@ -59,6 +59,17 @@ class IngestionService:
         self._reader_service = reader_service
         self._metadata_limit = metadata_limit
 
+    @property
+    def provider_count(self) -> int:
+        """Report how many providers one search fans out to.
+
+        ``limit`` is applied per provider and the results are concatenated, so
+        callers that must bound the TOTAL discovered set need this to size
+        their request.
+        """
+
+        return len(self._scout.provider_names)
+
     async def ingest_research_topic(
         self,
         query: str,

@@ -389,10 +389,10 @@ class RecordingProvider:
         self.requested_limits: list[int] = []
 
     async def search(self, query: str, limit: int) -> list[Paper]:
-        """Serve the fixed result set and remember the requested limit."""
+        """Serve at most ``limit`` papers, like a real provider, and record it."""
 
         self.requested_limits.append(limit)
-        return list(self._papers)
+        return list(self._papers[: max(0, limit)])
 
 
 class CountedIngestion:
@@ -401,6 +401,12 @@ class CountedIngestion:
     def __init__(self, inner: IngestionService) -> None:
         self._inner = inner
         self.limits: list[int] = []
+
+    @property
+    def provider_count(self) -> int:
+        """Forward the real fan-out width so the chat-turn bound can size itself."""
+
+        return self._inner.provider_count
 
     async def ingest_research_topic(
         self,
@@ -1122,3 +1128,52 @@ async def test_llm_outage_degrades_safely_and_sets_flag(
     assert response.text.strip(), "a concise safe error message is required"
     assert "Traceback" not in response.text
     assert "RuntimeError" not in response.text
+
+
+async def test_total_discovered_papers_stay_within_the_per_turn_bound(
+    repository: ResearchRepository, database: Database
+) -> None:
+    """Claim: one chat turn canonicalizes at most 12 papers ACROSS ALL providers.
+
+    Ingestion applies its ``limit`` per provider and concatenates the results,
+    so a naive clamp bounds each provider rather than the turn. With three
+    providers and the default budget that silently permits three times the
+    contracted ceiling. This drives three providers that each have far more
+    than the bound available.
+    """
+
+    providers = [
+        RecordingProvider(
+            [
+                _dup_paper(f"25{index}.{offset:05d}", f"Paper {index}-{offset}")
+                for offset in range(12)
+            ]
+        )
+        for index in range(3)
+    ]
+    for index, provider in enumerate(providers):
+        provider.name = f"recording-fake-{index}"  # type: ignore[misc]
+
+    inner = IngestionService(
+        scout=ScoutService(providers),
+        repository=repository,
+        ingestion_repository=IngestionRepository(database),
+        metadata_limit=50,
+    )
+    ingestion = CountedIngestion(inner)
+    service = _service(
+        repository,
+        llm=ScriptedLLM(),
+        ingestion=ingestion,
+        budget=ChatBudget(max_discovery_results=12),
+    )
+
+    response = await service.chat(ChatRequest(text=RESEARCH_QUESTION))
+
+    assert len(ingestion.limits) == 1
+    persisted = _paper_row_count(database)
+    assert persisted <= 12, (
+        f"one chat turn canonicalized {persisted} papers across "
+        f"{len(providers)} providers; the per-turn bound is 12"
+    )
+    assert len(response.paper_ids) <= 12
