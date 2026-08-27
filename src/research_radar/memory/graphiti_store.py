@@ -107,12 +107,18 @@ def _edge_to_fact(edge: Any) -> MemoryFact:
 
     score = getattr(edge, "score", None)
     raw_fact = getattr(edge, "fact", None)
+    parsed_score: float | None = None
+    if score is not None:
+        try:
+            parsed_score = float(score)
+        except (ValueError, TypeError):
+            parsed_score = None
     return MemoryFact(
         fact="" if raw_fact is None else str(raw_fact),
         memory_class=None,
         valid_at=_as_utc(getattr(edge, "valid_at", None)),
         invalid_at=_as_utc(getattr(edge, "invalid_at", None)),
-        score=float(score) if score is not None else None,
+        score=parsed_score,
     )
 
 
@@ -338,7 +344,14 @@ class GraphitiUserMemoryStore:
             try:
                 await asyncio.to_thread(self._ensure_storage_directory)
                 client = await asyncio.to_thread(self._client_factory)
-                await client.build_indices_and_constraints()
+                try:
+                    await client.build_indices_and_constraints()
+                except Exception:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+                    raise
             except ImportError:
                 self._mark_degraded(
                     "dependency",
@@ -368,12 +381,12 @@ class GraphitiUserMemoryStore:
         """
 
         settings = self._settings
-        return (
-            settings.llm_api_key is None
-            or not settings.llm_api_key.get_secret_value()
-            or not settings.llm_base_url
-            or not settings.llm_model
+        api_key = (
+            settings.llm_api_key.get_secret_value() if settings.llm_api_key is not None else ""
         )
+        base_url = settings.llm_base_url or ""
+        model = settings.llm_model or ""
+        return not api_key.strip() or not base_url.strip() or not model.strip()
 
     def _ensure_storage_directory(self) -> None:
         """Create the database parent directory on first use, never at import."""

@@ -617,3 +617,55 @@ async def test_close_failure_logs_warning_once_and_does_not_raise(
         await store.close()
     assert len(warning_records(caplog)) == 1
     assert "closing" in caplog.text
+
+
+async def test_missing_llm_configuration_with_whitespace_values(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Whitespace-only LLM settings degrade cleanly without touching storage."""
+
+    for override in (
+        {"llm_base_url": "   "},
+        {"llm_model": "   "},
+        {"llm_api_key": SecretStr("   ")},
+    ):
+        caplog.clear()
+        settings = make_settings(tmp_path, **override)
+        built = False
+
+        def _never_called() -> object:  # pragma: no cover
+            nonlocal built
+            built = True
+            raise AssertionError("client factory ran despite whitespace LLM setting")
+
+        store = GraphitiUserMemoryStore(settings, client_factory=_never_called)
+        with caplog.at_level(logging.WARNING):
+            status = await store.status()
+
+        assert built is False
+        assert status.healthy is False
+        assert not settings.user_memory_db_path_resolved().parent.exists()
+        await store.close()
+
+
+async def test_edge_with_invalid_score_type_maps_safely(tmp_path: Path) -> None:
+    """Edges with non-convertible score values map score=None without raising."""
+
+    fake = FakeGraphiti(edges=[FakeEdge(fact="valid fact", score="not-a-number")])  # type: ignore[arg-type]
+    store = make_store(tmp_path, fake)
+    facts = await store.search("score check", limit=5)
+    assert len(facts) == 1
+    assert facts[0].fact == "valid fact"
+    assert facts[0].score is None
+    await store.close()
+
+
+async def test_build_failure_cleans_up_client(tmp_path: Path) -> None:
+    """If build_indices_and_constraints raises, client.close() is attempted."""
+
+    fake = FakeGraphiti(fail_methods={"build"})
+    store = make_store(tmp_path, fake)
+    assert await store.search("trigger build") == []
+    assert fake.close_calls == 1
+    await store.close()
+
