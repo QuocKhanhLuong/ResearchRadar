@@ -245,3 +245,47 @@ def test_other_users_mentions_are_left_in_text() -> None:
 
     assert result.accepted is True
     assert result.text == f"ask <@{other_id}> too"
+
+
+def test_dm_bypasses_channel_allowlist() -> None:
+    settings = FakeSettings(discord_allowed_channel_ids=(123, 456))
+    dm_message = human_message("dm query", guild=None, channel=FakeChannel(channel_id=999))
+
+    result = make_policy(settings).admit(dm_message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is True
+    assert result.is_dm is True
+    assert result.text == "dm query"
+
+
+def test_dm_empty_content_is_accepted_with_empty_text() -> None:
+    dm_message = human_message("", guild=None)
+
+    result = make_policy().admit(dm_message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is True
+    assert result.is_dm is True
+    assert result.text == ""
+
+
+def test_multiple_bot_mentions_and_mixed_forms_stripped() -> None:
+    content = f"<@{BOT_USER_ID}>   alpha   <@!{BOT_USER_ID}>   beta  <@{BOT_USER_ID}>"
+    message = human_message(content)
+
+    result = make_policy().admit(message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is True
+    assert result.text == "alpha beta"
+
+
+def test_policy_defaults_with_empty_settings_object() -> None:
+    class BareSettings:
+        pass
+
+    policy = MentionPolicy(BareSettings())  # type: ignore[arg-type]
+    guild_msg = human_message(f"<@{BOT_USER_ID}> hello")
+    dm_msg = human_message("hello dm", guild=None)
+
+    assert policy.admit(guild_msg, bot_user_id=BOT_USER_ID).accepted is True  # type: ignore[arg-type]
+    assert policy.admit(dm_msg, bot_user_id=BOT_USER_ID).accepted is True  # type: ignore[arg-type]
+

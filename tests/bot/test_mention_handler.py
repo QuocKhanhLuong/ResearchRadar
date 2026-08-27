@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from research_radar.bot.client import (
     _CHUNK_LIMIT,
+    _EMPTY_RESPONSE_REPLY,
     _MENTION_USAGE_HINT,
     ResearchRadarBot,
     _application_intents,
@@ -208,3 +209,61 @@ def test_intents_default_to_dm_enabled_for_settings_missing_the_new_field() -> N
     intents = _application_intents(Settings(_env_file=None))
 
     assert intents.dm_messages is True
+
+
+async def test_on_message_when_bot_user_is_none_returns_immediately() -> None:
+    service = FakeChatService()
+    bot = create_bot(Settings(_env_file=None), chat_service=service)
+    bot._connection.user = None
+    message, _ = accepted_message()
+
+    await bot.on_message(message)
+    await bot.close()
+
+    assert service.calls == []
+    assert message.replied == []
+
+
+async def test_on_message_empty_chat_response_replies_fallback() -> None:
+    service = FakeChatService(response_text="")
+    bot = build_bot(service)
+    message, channel = accepted_message()
+
+    await bot.on_message(message)
+    await bot.close()
+
+    assert len(service.calls) == 1
+    assert message.replied == [_EMPTY_RESPONSE_REPLY]
+    assert channel.sent == []
+
+
+def test_chunk_message_text_single_newline_boundary() -> None:
+    lines = [f"line {index} " + "z" * 100 for index in range(30)]
+    full_text = "\n".join(lines)
+    assert len(full_text) > _CHUNK_LIMIT
+
+    chunks = _chunk_message_text(full_text)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= _CHUNK_LIMIT for chunk in chunks)
+    assert "\n".join(chunks) == full_text
+
+
+def test_chunk_message_text_empty_input() -> None:
+    assert _chunk_message_text("") == []
+    assert _chunk_message_text("   \n\t  ") == []
+
+
+async def test_on_message_dm_accepted_and_dispatches_chat() -> None:
+    service = FakeChatService(response_text="dm answer")
+    bot = build_bot(service)
+    channel = FakeChannel(CHANNEL_ID)
+    dm_message = FakeMessage("direct question without mention", channel=channel, guild=None)
+
+    await bot.on_message(dm_message)
+    await bot.close()
+
+    assert len(service.calls) == 1
+    assert service.calls[0].text == "direct question without mention"
+    assert channel.sent == ["dm answer"]
+
