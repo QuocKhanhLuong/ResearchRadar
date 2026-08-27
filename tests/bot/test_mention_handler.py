@@ -267,3 +267,55 @@ async def test_on_message_dm_accepted_and_dispatches_chat() -> None:
     assert service.calls[0].text == "direct question without mention"
     assert channel.sent == ["dm answer"]
 
+async def test_none_chat_response_text_replies_with_safe_empty_notice() -> None:
+    service = FakeChatService()
+    service.response_text = None  # type: ignore[assignment]
+    bot = build_bot(service)
+    message, channel = accepted_message()
+
+    await bot.on_message(message)
+    await bot.close()
+
+    assert len(service.calls) == 1
+    assert message.replied == [_EMPTY_RESPONSE_REPLY]
+    assert channel.sent == []
+
+
+async def test_on_message_returns_early_when_bot_user_is_none() -> None:
+    service = FakeChatService()
+    bot = create_bot(Settings(_env_file=None), chat_service=service)
+    # bot._connection.user is None initially
+    message, channel = accepted_message()
+
+    await bot.on_message(message)
+    await bot.close()
+
+    assert service.calls == []
+    assert message.replied == []
+    assert channel.sent == []
+
+
+async def test_dm_message_relayed_to_chat_service_and_sent_to_dm_channel() -> None:
+    service = FakeChatService(response_text="dm answer")
+    bot = build_bot(service)
+    channel = FakeChannel(CHANNEL_ID)
+    message = FakeMessage("direct question without mention", channel=channel, guild=None)
+
+    await bot.on_message(message)
+    await bot.close()
+
+    assert len(service.calls) == 1
+    request = service.calls[0]
+    assert request.text == "direct question without mention"
+    assert request.discord_user_id == str(HUMAN_ID)
+    assert request.channel_id == str(CHANNEL_ID)
+    assert channel.sent == ["dm answer"]
+
+
+def test_chunk_helper_handles_whitespace_and_custom_limit() -> None:
+    assert _chunk_message_text("") == []
+    assert _chunk_message_text("   \n\t  ") == []
+
+    text = "first paragraph\n\nsecond paragraph\n\nthird paragraph"
+    chunks = _chunk_message_text(text, limit=25)
+    assert chunks == ["first paragraph", "second paragraph", "third paragraph"]

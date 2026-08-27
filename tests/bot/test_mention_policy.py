@@ -268,6 +268,96 @@ def test_dm_empty_content_is_accepted_with_empty_text() -> None:
     assert result.text == ""
 
 
+def test_self_message_in_dm_is_rejected_as_self_message() -> None:
+    message = FakeMessage(
+        content="self message in DM",
+        author=FakeAuthor(user_id=BOT_USER_ID),
+        guild=None,
+    )
+
+    result = make_policy().admit(message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is False
+    assert result.reason == "self_message"
+    assert result.is_dm is True
+
+
+def test_bot_author_in_dm_is_rejected_as_bot_author() -> None:
+    message = FakeMessage(
+        content="other bot in DM",
+        author=FakeAuthor(user_id=OTHER_BOT_ID, bot=True),
+        guild=None,
+    )
+
+    result = make_policy().admit(message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is False
+    assert result.reason == "bot_author"
+    assert result.is_dm is True
+
+
+def test_owner_mention_in_allowed_guild_channel_is_accepted() -> None:
+    settings = FakeSettings(
+        discord_owner_user_id=OWNER_ID,
+        discord_allowed_channel_ids=(CHANNEL_ID,),
+    )
+    message = human_message(
+        f"<@{BOT_USER_ID}> query from owner",
+        author=FakeAuthor(user_id=OWNER_ID),
+        channel=FakeChannel(CHANNEL_ID),
+    )
+
+    result = make_policy(settings).admit(message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is True
+    assert result.text == "query from owner"
+    assert result.is_dm is False
+
+
+def test_empty_content_with_mention_in_mentions_list_is_accepted_empty() -> None:
+    class MentionedUser:
+        id = BOT_USER_ID
+
+    message = FakeMessage(
+        content="",
+        author=FakeAuthor(user_id=HUMAN_ID),
+        mentions=[MentionedUser()],
+    )
+
+    result = make_policy().admit(message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is True
+    assert result.text == ""
+
+
+def test_mentions_list_with_nonmatching_or_malformed_members() -> None:
+    class OtherUser:
+        id = 999_888_777
+
+    class MalformedMember:
+        pass
+
+    message = human_message(
+        "regular message with no bot mention",
+        mentions=[OtherUser(), MalformedMember()],
+    )
+
+    result = make_policy().admit(message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is False
+    assert result.reason == "no_mention"
+
+
+def test_multiple_bot_mentions_and_surrounding_whitespace() -> None:
+    content = f"<@{BOT_USER_ID}>\n\n  first part  <@!{BOT_USER_ID}>\tsecond part\n<@{BOT_USER_ID}>"
+    message = human_message(content)
+
+    result = make_policy().admit(message, bot_user_id=BOT_USER_ID)  # type: ignore[arg-type]
+
+    assert result.accepted is True
+    assert result.text == "first part second part"
+
+
 def test_multiple_bot_mentions_and_mixed_forms_stripped() -> None:
     content = f"<@{BOT_USER_ID}>   alpha   <@!{BOT_USER_ID}>   beta  <@{BOT_USER_ID}>"
     message = human_message(content)
@@ -288,4 +378,3 @@ def test_policy_defaults_with_empty_settings_object() -> None:
 
     assert policy.admit(guild_msg, bot_user_id=BOT_USER_ID).accepted is True  # type: ignore[arg-type]
     assert policy.admit(dm_msg, bot_user_id=BOT_USER_ID).accepted is True  # type: ignore[arg-type]
-
