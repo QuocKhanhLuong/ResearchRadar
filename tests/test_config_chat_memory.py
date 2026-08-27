@@ -97,3 +97,49 @@ def test_user_memory_db_path_resolved_is_absolute_and_creates_nothing(
     assert resolved == target.expanduser().resolve()
     assert not resolved.exists()
     assert not (tmp_path / "never-created").exists()
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        ("", ()),
+        ("   ", ()),
+        (",", ()),
+        (" , , ", ()),
+        ("100,,200", (100, 200)),
+        (" 100 , 200 , 300 ", (100, 200, 300)),
+    ],
+)
+def test_discord_allowed_channel_ids_blank_and_sparse_csv(
+    monkeypatch: pytest.MonkeyPatch, env_value: str, expected: tuple[int, ...]
+) -> None:
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNEL_IDS", env_value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.discord_allowed_channel_ids == expected
+
+
+def test_discord_allowed_channel_ids_direct_collection_input() -> None:
+    settings_list = Settings(discord_allowed_channel_ids=[10, 20], _env_file=None)
+    assert settings_list.discord_allowed_channel_ids == (10, 20)
+
+    settings_tuple = Settings(discord_allowed_channel_ids=(30, 40), _env_file=None)
+    assert settings_tuple.discord_allowed_channel_ids == (30, 40)
+
+
+def test_build_application_bot_constructs_offline_safely(tmp_path: Path) -> None:
+    from research_radar.main import build_application_bot
+    from research_radar.memory.disabled import DisabledUserMemoryStore
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path}/test.db",
+        artifact_root=str(tmp_path / "artifacts"),
+        user_memory_db_path=str(tmp_path / "memory"),
+        _env_file=None,
+    )
+
+    bot = build_application_bot(settings)
+    assert bot is not None
+    assert isinstance(bot._chat_service._user_memory, DisabledUserMemoryStore)
+

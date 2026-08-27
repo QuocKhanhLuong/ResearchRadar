@@ -110,6 +110,16 @@ or API key.
 | `PINECONE_API_KEY` | With Pinecone | — | Credential for the derived semantic index. |
 | `PINECONE_INDEX` | With Pinecone | — | Pinecone index name. |
 | `PINECONE_NAMESPACE` | No | `research-radar` | Namespace within the Pinecone index. |
+| `DISCORD_OWNER_USER_ID` | No | — | Optional owner user ID admission filter for mention chat. |
+| `DISCORD_ALLOWED_CHANNEL_IDS` | No | — | Comma-separated list of channel IDs allowed for mention chat; empty allows all channels. |
+| `DISCORD_CHAT_ON_MENTION` | No | `true` | Enable/disable mention-driven chat responses. |
+| `DISCORD_DM_CHAT` | No | `true` | Enable/disable direct-message chat responses. |
+| `USER_MEMORY_BACKEND` | No | `disabled` | `disabled` or `graphiti`. Personal memory backend; graphiti needs the `memory` extra and working LLM settings. |
+| `USER_MEMORY_DB_PATH` | No | `data/user_memory` | Storage path for the embedded Kuzu personal memory graph. |
+| `USER_MEMORY_GROUP_ID` | No | `primary-user` | Fact grouping identifier for personal memory. |
+| `USER_MEMORY_MAX_RESULTS` | No | `8` | Maximum memory facts recalled per chat turn. |
+| `USER_MEMORY_CAPTURE` | No | `true` | Enable/disable automatic memory capture from conversations. |
+| `CHAT_LIVE_DISCOVERY_LIMIT` | No | `10` | Maximum number of candidate papers fetched per live discovery query. |
 
 Scholarly credentials are optional where providers permit anonymous access.
 They can improve rate limits or availability but are not needed to install or
