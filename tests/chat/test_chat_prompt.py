@@ -573,3 +573,232 @@ def test_default_budget_matches_service_scale() -> None:
     assert budget.max_stored_items == 8
     assert budget.max_discovery_items == 10
     assert budget.max_user_memory_facts == 8
+
+
+# ---------------------------------------------------------------------------
+# Strict evidence boundaries & epistemic invariants
+# ---------------------------------------------------------------------------
+
+
+def test_system_rules_verbatim_scientific_and_absence_boundaries() -> None:
+    _, text = render()
+    rules = section(text, SYSTEM_RULES_HEADER)
+    # 1. User memory cannot support science
+    assert "USER MEMORY is what the user has said about themselves." in rules
+    assert "NEVER scientific support and NEVER evidence that a claim is true." in rules
+    assert (
+        'Never present a user hypothesis, belief, preference, or goal as a published result '
+        'or as something "the literature shows".'
+    ) in rules
+    # 2. No global absence claims
+    assert "Never claim that the literature contains no work on a topic." in rules
+    assert (
+        "The corpus available here is partial and bounded; absence from this packet "
+        "is not absence from the literature."
+    ) in rules
+    # 3. Exact IDs only
+    assert (
+        "Cite ONLY the paper ids and gap ids that appear in the evidence sections, "
+        "using their exact ids. Never invent, alter, or guess an id."
+    ) in rules
+    # 4. PaperCard vs metadata distinction
+    assert (
+        "Distinguish STORED SCIENTIFIC EVIDENCE items that carry an analysed PaperCard "
+        "(full text was read) from abstract/metadata-only items"
+    ) in rules
+    # 5. Project memory canonical outranking
+    assert (
+        "When EXPLICIT PROJECT MEMORY and USER MEMORY conflict, EXPLICIT PROJECT MEMORY "
+        "is canonical and outranks USER MEMORY. Say so instead of silently picking one."
+    ) in rules
+
+
+def test_stored_card_vs_stored_metadata_vs_discovery_metadata_full_matrix() -> None:
+    packet = EvidencePacket(
+        stored=(
+            StoredEvidenceItem(
+                paper_id="paper-card-1",
+                title="Full Text Work",
+                year=2024,
+                venue="NeurIPS",
+                abstract="Card abstract.",
+                has_paper_card=True,
+                card_summary="Extracted benchmark results.",
+            ),
+            StoredEvidenceItem(
+                paper_id="paper-meta-1",
+                title="Metadata Stored Work",
+                year=2023,
+                venue="ICML",
+                abstract="Metadata abstract.",
+                has_paper_card=False,
+            ),
+        ),
+        discovery=(
+            DiscoveryEvidenceItem(
+                paper_id="paper-disc-1",
+                title="Live Discovery Work",
+                year=2025,
+                venue="arXiv",
+                abstract="Preprint abstract.",
+            ),
+        ),
+        live_discovery_used=True,
+    )
+    _, text = render(packet)
+
+    stored_slice = section(text, STORED_EVIDENCE_HEADER)
+    discovery_slice = section(text, DISCOVERY_EVIDENCE_HEADER)
+
+    # Stored card item has paper card depth & summary
+    assert "--- Paper paper-card-1 ---" in stored_slice
+    assert "Evidence depth: analysed full text (PaperCard)" in stored_slice
+    assert "PaperCard summary: Extracted benchmark results." in stored_slice
+
+    # Stored metadata item has metadata depth (no paper card)
+    assert "--- Paper paper-meta-1 ---" in stored_slice
+    assert "Evidence depth: abstract/metadata only (no PaperCard)" in stored_slice
+
+    # Discovery item has discovery metadata depth
+    assert "--- Paper paper-disc-1 ---" in discovery_slice
+    assert (
+        "Live discovery saw ONLY abstract/metadata for the items below; "
+        "no full text and no PaperCard exists."
+    ) in discovery_slice
+    assert (
+        "Evidence depth: abstract/metadata only (live discovery, no PaperCard)"
+    ) in discovery_slice
+
+
+def test_real_chat_evidence_module_compatibility() -> None:
+    import research_radar.chat.evidence as real_evidence
+
+    real_packet = real_evidence.EvidencePacket(
+        stored=(
+            real_evidence.StoredEvidenceItem(
+                paper_id="real-p1",
+                title="Real Stored",
+                year=2024,
+                venue="ACL",
+                abstract="Abstract of real item.",
+                has_paper_card=True,
+                card_summary="Summary of real item.",
+            ),
+        ),
+        discovery=(
+            real_evidence.DiscoveryEvidenceItem(
+                paper_id="real-d1",
+                title="Real Discovery",
+                year=2025,
+                venue="EMNLP",
+                abstract="Abstract of discovery.",
+            ),
+        ),
+        gap_ids=("gap-alpha",),
+        project=real_evidence.ProjectMemory(
+            project_id="prj-real",
+            name="Real Project",
+            constraints=("max 16GB VRAM",),
+            hypotheses=("distillation retains 95% perf",),
+            rejected_ideas=("full finetuning 70B",),
+        ),
+        user_memory=UserMemoryContext(
+            facts=(MemoryFact(fact="prefers small models", memory_class=MemoryClass.PREFERENCE),),
+            backend="graphiti",
+        ),
+    )
+    messages = build_chat_prompt(
+        ChatRequest(text="Tell me about distillation"),
+        make_decision(),
+        real_packet,  # type: ignore[arg-type]
+    )
+    combined = "\n\n".join(m.content for m in messages)
+
+    assert real_packet.allowed_paper_ids == {"real-p1", "real-d1"}
+    assert real_packet.allowed_gap_ids == {"gap-alpha"}
+    assert "--- Paper real-p1 ---" in combined
+    assert "--- Paper real-d1 ---" in combined
+    assert "- CandidateGap gap-alpha" in combined
+    assert "Name: Real Project" in combined
+    assert "Constraints: max 16GB VRAM" in combined
+    assert (
+        "REJECTED IDEAS (Project History - Do NOT recommend as new): full finetuning 70B"
+    ) in combined
+    assert "- [preference] prefers small models" in combined
+
+
+def test_card_summary_and_fact_truncation_at_word_boundary() -> None:
+    long_summary = long_abstract(word="summarypoint", words=100)
+    long_fact = long_abstract(word="userpreference", words=50)
+    tiny_budget = ChatPromptBudget(max_summary_chars=50, max_fact_chars=40)
+
+    packet = EvidencePacket(
+        stored=(
+            StoredEvidenceItem(
+                paper_id="p-long-summary",
+                title="Title",
+                year=2024,
+                venue=None,
+                abstract="Short abstract",
+                has_paper_card=True,
+                card_summary=long_summary,
+            ),
+        ),
+        user_memory=UserMemoryContext(
+            facts=(MemoryFact(fact=long_fact, memory_class=MemoryClass.PREFERENCE),),
+            backend="graphiti",
+        ),
+    )
+    _, text = render(packet, budget=tiny_budget)
+
+    stored_slice = section(text, STORED_EVIDENCE_HEADER)
+    memory_slice = section(text, ADVISORY_HEADER_VERBATIM)
+
+    summary_line = next(
+        line for line in stored_slice.splitlines() if line.startswith("PaperCard summary: ")
+    )
+    summary_body = summary_line[len("PaperCard summary: ") :]
+    assert summary_body.endswith("...")
+    assert len(summary_body) <= 50 + 3
+
+    fact_line = next(
+        line for line in memory_slice.splitlines() if line.startswith("- [preference] ")
+    )
+    fact_body = fact_line[len("- [preference] ") :]
+    assert fact_body.endswith("...")
+    assert len(fact_body) <= 40 + 3
+
+
+def test_candidate_gap_ids_rendered_under_stored_evidence_even_without_stored_papers() -> None:
+    packet = EvidencePacket(gap_ids=("gap-x1", "gap-x2"))
+    _, text = render(packet)
+
+    assert STORED_EVIDENCE_HEADER in text
+    stored_slice = section(text, STORED_EVIDENCE_HEADER)
+    assert "Known candidate gap ids (cite by exact id):" in stored_slice
+    assert "- CandidateGap gap-x1" in stored_slice
+    assert "- CandidateGap gap-x2" in stored_slice
+    assert "--- Paper" not in stored_slice
+
+
+def test_project_memory_list_caps_applied() -> None:
+    packet = EvidencePacket(
+        project=ProjectMemory(
+            project_id="proj-cap",
+            name="Capped Project",
+            constraints=tuple(f"c{i}" for i in range(10)),
+            hypotheses=tuple(f"h{i}" for i in range(10)),
+            rejected_ideas=tuple(f"r{i}" for i in range(10)),
+        ),
+    )
+    custom_budget = ChatPromptBudget(max_items_per_project_list=3)
+    _, text = render(packet, budget=custom_budget)
+    project_slice = section(text, PROJECT_MEMORY_HEADER)
+
+    assert "Constraints: c0, c1, c2" in project_slice
+    assert "c3" not in project_slice
+    assert "Hypotheses: h0, h1, h2" in project_slice
+    assert "h3" not in project_slice
+    assert "REJECTED IDEAS (Project History - Do NOT recommend as new): r0, r1, r2" in project_slice
+    assert "r3" not in project_slice
+
