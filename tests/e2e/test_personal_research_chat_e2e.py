@@ -37,11 +37,13 @@ from e2e.fakes import (  # noqa: E402
     SCIENTIFIC_EVIDENCE_HEADERS,
     SECRET_PAYLOAD,
     FailingLLMProvider,
+    FakeEmbeddingProvider,
     build_fake_user_memory,
     captured_episodes,
     joined_prompt_text,
     make_discord_message,
     prompt_section,
+    provider_trio_for_topic,
     seed_user_memory,
     total_scout_calls,
 )
@@ -359,3 +361,138 @@ async def test_project_rejected_idea_outranks_older_graphiti_fact(
     positions = _header_positions(prompt_text)
     assert positions[PROMPT_USER_MEMORY_HEADER] < positions[PROMPT_PROJECT_HEADER]
     assert positions[PROMPT_PROJECT_HEADER] < positions[PROMPT_QUESTION_HEADER]
+
+
+async def test_ingestion_outage_degrades_to_stored_evidence_only(
+    chat_stack, count_rows
+) -> None:
+    """Scenario 13: discovery outage degrades to stored evidence only without raising."""
+
+    class FailingIngestion:
+        provider_count = 1
+
+        async def ingest_research_topic(
+            self,
+            query: str,
+            *,
+            limit: int = 20,
+            project_id: str | None = None,
+            auto_read: int = 0,
+        ):
+            raise RuntimeError("simulated live discovery outage")
+
+    stack = chat_stack(ingestion_service=FailingIngestion())
+
+    response = await stack.service.chat(ChatRequest(text=DISCOVERY_QUERY))
+
+    assert response.live_discovery_used is False
+    assert response.degraded is False
+    assert response.text
+    assert FAKE_LLM_ANSWER in response.text
+    assert count_rows("papers") == 0
+
+
+async def test_stale_semantic_candidate_never_becomes_evidence(
+    chat_stack, semantic_index, repository
+) -> None:
+    """Scenario 14: stale semantic index hits absent from SQLite are discarded."""
+    from research_radar.semantic.base import SemanticRecord
+
+    stale_paper_id = "ghost-stale-paper-999"
+    embedding = FakeEmbeddingProvider()
+    vector = embedding.embed_texts(["quantum error correction"])[0]
+    semantic_index.upsert(
+        [
+            SemanticRecord(
+                entity_id=f"paper:{stale_paper_id}",
+                entity_type="paper",
+                paper_id=stale_paper_id,
+                vector=vector,
+                publication_year=2024,
+                embedding_schema_version="paper-v1",
+                embedding_model="fake-embedder-v1",
+            )
+        ]
+    )
+    assert await _resolve_paper(repository, stale_paper_id) is None
+
+    real_paper = Paper(
+        id="openalex:W777",
+        title="Surface codes for quantum error correction",
+        abstract="A study on quantum error correction.",
+        doi="10.7777/qec.777",
+        source="openalex",
+        external_ids={"openalex": "W777", "doi": "10.7777/qec.777"},
+    )
+    repository.upsert_merged_paper(real_paper)
+
+    stack = chat_stack(
+        semantic_index=semantic_index,
+        embedding_provider=embedding,
+    )
+
+    response = await stack.service.chat(ChatRequest(text="find work on quantum error correction"))
+
+    assert stale_paper_id not in response.paper_ids
+    prompt_text = joined_prompt_text(stack.llm.last_messages)
+    assert stale_paper_id not in prompt_text
+
+
+async def test_live_discovery_chat_performs_zero_full_pdf_reads(
+    chat_stack,
+) -> None:
+    """Scenario 15: live discovery during chat passes auto_read=0 and reads zero PDFs."""
+    from research_radar.research.ingestion import IngestionService
+    from research_radar.research.scout import ScoutService
+
+    class MonitoredReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def read_url(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("Full PDF reader was called during chat turn!")
+
+    reader = MonitoredReader()
+    topic = "topological quantum computing architectures"
+    providers = provider_trio_for_topic(topic, works=2)
+
+    recorded_auto_reads: list[int] = []
+
+    class MonitoredIngestion(IngestionService):
+        async def ingest_research_topic(
+            self,
+            query: str,
+            *,
+            limit: int = 20,
+            project_id: str | None = None,
+            auto_read: int = 0,
+        ):
+            recorded_auto_reads.append(auto_read)
+            return await super().ingest_research_topic(
+                query, limit=limit, project_id=project_id, auto_read=auto_read
+            )
+
+    temp_stack = chat_stack()
+    monitored_ingestion = MonitoredIngestion(
+        scout=ScoutService(list(providers)),
+        repository=temp_stack.repository,
+        ingestion_repository=temp_stack.ingestion_repository,
+        reader_service=reader,  # type: ignore[arg-type]
+        metadata_limit=50,
+    )
+    stack = chat_stack(
+        ingestion_service=monitored_ingestion,
+        topic=topic,
+    )
+
+    response = await stack.service.chat(
+        ChatRequest(text=f"find recent papers on {topic}")
+    )
+
+    assert response.mode is ChatMode.RESEARCH_LIVE
+    assert response.live_discovery_used is True
+    assert len(recorded_auto_reads) == 1
+    assert recorded_auto_reads[0] == 0
+    assert reader.calls == 0
+

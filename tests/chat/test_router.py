@@ -390,3 +390,27 @@ def test_routing_assist_response_defaults() -> None:
 
     assert assist.mode == "conversational"
     assert assist.topic == ""
+
+
+async def test_new_research_topic_without_project_routes_to_research_stored() -> None:
+    """A new research query without project hint routes to RESEARCH_STORED allowing live."""
+
+    decision = await route_text("find recent papers on graph neural networks")
+
+    assert decision.mode is ChatMode.RESEARCH_STORED
+    assert decision.allows_live_discovery is True
+    assert decision.needs_stored_research is True
+    assert decision.project_hint is None
+    assert decision.search_query == "graph neural networks"
+
+
+async def test_research_request_with_memory_question_enables_both_channels() -> None:
+    """A query asking for papers tailored to user interests enables memory and discovery."""
+
+    decision = await route_text("find papers about my research interests in medical robotics")
+
+    assert decision.mode is ChatMode.RESEARCH_STORED
+    assert decision.allows_live_discovery is True
+    assert decision.needs_stored_research is True
+    assert decision.needs_user_memory is True
+    assert decision.project_hint is None

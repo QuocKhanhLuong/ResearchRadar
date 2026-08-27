@@ -97,6 +97,9 @@ def chat_stack(
         semantic_index: FakeSemanticIndex | None = None,
         topic: str = DEFAULT_CHAT_TOPIC,
         works: int = 3,
+        ingestion_service: IngestionService | None = None,
+        embedding_provider: Any = None,
+        budget: Any = None,
     ) -> SimpleNamespace:
         from research_radar.chat.router import ChatRouter
         from research_radar.chat.service import ChatService
@@ -104,30 +107,32 @@ def chat_stack(
         resolved_llm = llm if llm is not None else RecordingLLMProvider()
         resolved_memory = user_memory if user_memory is not None else build_fake_user_memory()
         providers = provider_trio_for_topic(topic, works=works)
-        ingestion_service = IngestionService(
-            scout=ScoutService(list(providers)),
-            repository=repository,
-            ingestion_repository=ingestion_repository,
-            reader_service=None,
-            metadata_limit=50,
-        )
+        resolved_ingestion = ingestion_service
+        if resolved_ingestion is None:
+            resolved_ingestion = IngestionService(
+                scout=ScoutService(list(providers)),
+                repository=repository,
+                ingestion_repository=ingestion_repository,
+                reader_service=None,
+                metadata_limit=50,
+            )
         service = ChatService(
             repository=repository,
             router=ChatRouter(llm_provider=resolved_llm),
             user_memory=resolved_memory,
             capture_policy=capture_policy,
             llm_provider=resolved_llm,
-            ingestion_service=ingestion_service,
-            embedding_provider=None,
+            ingestion_service=resolved_ingestion,
+            embedding_provider=embedding_provider,
             semantic_index=semantic_index,
-            budget=None,
+            budget=budget,
         )
         return SimpleNamespace(
             service=service,
             llm=resolved_llm,
             user_memory=resolved_memory,
             providers=providers,
-            ingestion_service=ingestion_service,
+            ingestion_service=resolved_ingestion,
             repository=repository,
             ingestion_repository=ingestion_repository,
         )

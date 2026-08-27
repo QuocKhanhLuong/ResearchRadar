@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from research_radar.memory.capture import MemoryCapturePolicy
 from research_radar.memory.fakes import FakeUserMemoryStore
 from research_radar.memory.models import MemoryClass, MemoryFact
 from research_radar.models import Paper
+from research_radar.models.gap import CandidateGap, GapProvenance
 from research_radar.models.paper_card import EvidenceClaim, PaperCard
 from research_radar.reader.llm.base import LLMMessage
 from research_radar.research.ingestion import IngestionResult
@@ -699,3 +701,174 @@ async def test_semantic_hit_can_satisfy_sufficiency_without_discovery(
     assert ingestion.call_count == 0
     assert response.mode is ChatMode.RESEARCH_STORED
     assert set(response.paper_ids) <= {*stored_ids, neighbour_id}
+
+
+# ---------------------------------------------------------------------------
+# Focused audit verification tests.
+# ---------------------------------------------------------------------------
+
+
+async def test_new_topic_without_project_default_discovery_limit_ten(
+    repository: ResearchRepository,
+) -> None:
+    """A new topic without project runs stored-first (0 hits), then discovery with default 10."""
+
+    discovered_papers = _discovery_batch(10, prefix="newtopic")
+    ingestion = RecordingIngestionService(repository, discovered_papers)
+    llm = ScriptedChatLLM(cite_ids_from_prompt=True)
+
+    response = await _service(repository, llm=llm, ingestion=ingestion).chat(
+        ChatRequest(text="what is the latest research on world models for robotics")
+    )
+
+    assert ingestion.call_count == 1
+    call = ingestion.calls[0]
+    assert call["query"] == "world models for robotics"
+    assert call["limit"] == 10
+    assert call["auto_read"] == 0
+    assert call["project_id"] is None
+    assert response.mode is ChatMode.RESEARCH_LIVE
+    assert response.live_discovery_used is True
+    assert response.evidence_scope is EvidenceScope.DISCOVERY_METADATA
+    assert response.degraded is False
+    assert len(response.paper_ids) == 10
+    for paper_id in response.paper_ids:
+        assert repository.get_paper(paper_id) is not None
+    prompt_text = llm.last_messages[-1].content
+    assert "LIVE DISCOVERY EVIDENCE" in prompt_text
+    assert "EXPLICIT PROJECT MEMORY" not in prompt_text
+
+
+async def test_discovery_deduplication_drops_duplicate_paper_ids(
+    repository: ResearchRepository,
+) -> None:
+    """Duplicate paper IDs returned from discovery are resolved and deduped."""
+
+    paper1 = _paper("dup1", "Duplicate Paper 1", "Abstract 1")
+    paper2 = _paper("dup2", "Duplicate Paper 2", "Abstract 2")
+    p1_id = repository.upsert_merged_paper(paper1)
+    p2_id = repository.upsert_merged_paper(paper2)
+
+    class DuplicateIngestionService:
+        async def ingest_research_topic(self, query: str, **kwargs: Any) -> IngestionResult:
+            return IngestionResult(
+                run_id="run-dup",
+                query=query,
+                discovered_count=4,
+                canonical_count=2,
+                paper_ids=[p1_id, p1_id, p2_id, p1_id],
+                warnings=[],
+                provider_counts={},
+                read_paper_ids=[],
+            )
+
+    llm = ScriptedChatLLM(cite_ids_from_prompt=True)
+    service = _service(
+        repository,
+        llm=llm,
+        ingestion=DuplicateIngestionService(),  # type: ignore[arg-type]
+    )
+
+    response = await service.chat(ChatRequest(text=RESEARCH_QUERY))
+
+    assert response.mode is ChatMode.RESEARCH_LIVE
+    assert response.paper_ids == (p1_id, p2_id)
+
+
+async def test_unresolved_semantic_candidate_skipped_and_backfilled(
+    repository: ResearchRepository,
+) -> None:
+    """Unresolvable candidate IDs in SQLite are skipped, and valid subsequent candidates
+    fill budget.
+    """
+
+    valid_ids = [_seed_paper_with_card(repository, f"valid{i}") for i in range(3)]
+    ghost_id = "ghost_nonexistent_id"
+
+    class GhostRetrieverIndex(FakeSemanticIndex):
+        pass
+
+    embedding = FakeEmbeddingProvider(dimension=DIMENSION)
+    index = GhostRetrieverIndex()
+    # Upsert ghost first, then valid IDs
+    index.upsert(
+        [
+            SemanticRecord(
+                entity_id=f"paper:{ghost_id}",
+                entity_type="paper",
+                paper_id=ghost_id,
+                vector=embedding.embed_texts([RESEARCH_QUERY])[0],
+                embedding_schema_version="paper-v1",
+                embedding_model="fake-embedding-v1",
+            )
+        ]
+    )
+
+    service = _service(
+        repository,
+        llm=ScriptedChatLLM(cite_ids_from_prompt=True),
+        embedding=embedding,
+        index=index,
+        budget=ChatBudget(max_stored_evidence=3),
+    )
+
+    response = await service.chat(ChatRequest(text=RESEARCH_QUERY))
+
+    assert ghost_id not in response.paper_ids
+    assert set(response.paper_ids) == set(valid_ids)
+
+
+async def test_candidate_gap_citation_validation(
+    repository: ResearchRepository,
+) -> None:
+    """Candidate gap IDs referenced by the LLM are validated against the evidence packet."""
+
+    paper_id = _seed_paper_with_card(repository, "gap_seed")
+    gap = CandidateGap(
+        id="GAP-001",
+        title="Diffusion policy latency gap",
+        description="Inference speed bottleneck in real-time control.",
+        gap_type="contradiction",
+        research_question="Can diffusion policy achieve 100Hz on edge GPUs?",
+        supporting_papers=[paper_id],
+        evidence_count=1,
+        search_scope="1 paper",
+        provenance=GapProvenance(corpus_description="Diffusion test"),
+        created_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    repository.save_candidate(gap)
+
+    llm = ScriptedChatLLM(
+        payload={
+            "answer": "There is a gap in latency.",
+            "referenced_paper_ids": [paper_id],
+            "referenced_gap_ids": ["GAP-001", "GAP-FABRICATED-999"],
+        }
+    )
+
+    response = await _service(repository, llm=llm).chat(
+        ChatRequest(text="find recent papers on diffusion policy latency")
+    )
+
+    assert response.gap_ids == ("GAP-001",)
+
+
+async def test_llm_failure_on_stored_evidence_returns_no_paper_ids(
+    repository: ResearchRepository,
+) -> None:
+    """When stored evidence is sufficient and the LLM fails, degraded response
+    carries empty paper_ids.
+    """
+
+    for i in range(3):
+        _seed_paper_with_card(repository, f"stored_seed{i}")
+
+    llm = ScriptedChatLLM(exc=RuntimeError("LLM synthesis error"))
+    response = await _service(repository, llm=llm).chat(
+        ChatRequest(text=RESEARCH_QUERY)
+    )
+
+    assert response.degraded is True
+    assert response.live_discovery_used is False
+    assert response.paper_ids == ()
+    assert "couldn't synthesize an answer" in response.text

@@ -323,10 +323,16 @@ class ChatService:
             candidates = self._hybrid.retrieve(search_query)
             limit = max(0, self._budget.max_stored_evidence)
             stored: list[StoredEvidenceItem] = []
-            for candidate in candidates[:limit]:
+            seen: set[str] = set()
+            for candidate in candidates:
+                if len(stored) >= limit:
+                    break
+                if candidate.paper_id in seen:
+                    continue
                 paper = self._repository.get_paper(candidate.paper_id)
                 if paper is None:
                     continue
+                seen.add(paper.id)
                 card = self._repository.get_paper_card(paper.id)
                 stored.append(
                     StoredEvidenceItem(
@@ -416,11 +422,15 @@ class ChatService:
         """Re-read every discovered id from SQLite; drop unresolvable ones."""
 
         items: list[DiscoveryEvidenceItem] = []
+        seen: set[str] = set()
         for paper_id in paper_ids:
+            if paper_id in seen:
+                continue
             paper = self._repository.get_paper(paper_id)
             if paper is None:
                 logger.warning("A discovered id did not resolve in storage; dropped.")
                 continue
+            seen.add(paper.id)
             items.append(
                 DiscoveryEvidenceItem(
                     paper_id=paper.id,

@@ -1,6 +1,6 @@
 """Deterministic offline smoke test for the personal research chat feature.
 
-Mirrors ``scripts/smoke_test_research_radar.py`` and exercises the same twelve
+Mirrors ``scripts/smoke_test_research_radar.py`` and exercises the same fifteen
 scenarios as ``tests/e2e/test_personal_research_chat_e2e.py``, but standalone:
 no network, no credentials, no Discord connection, no external LLM APIs.
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 import sys
 import tempfile
 import traceback
@@ -36,8 +37,10 @@ from e2e.fakes import (  # noqa: E402
     BOT_USER_ID,
     FAKE_LLM_ANSWER,
     OTHER_BOT_USER_ID,
+    PROMPT_DISCOVERY_HEADER,
     PROMPT_PROJECT_HEADER,
     PROMPT_QUESTION_HEADER,
+    PROMPT_STORED_EVIDENCE_HEADER,
     PROMPT_SYSTEM_HEADER,
     PROMPT_USER_MEMORY_HEADER,
     SCIENTIFIC_EVIDENCE_HEADERS,
@@ -56,6 +59,24 @@ from e2e.fakes import (  # noqa: E402
 
 MEMORY_PREFERENCE_QUERY = "what research topics do I prefer?"
 DISCOVERY_QUERY = "find recent papers on quantum error correction"
+
+
+def _header_positions(prompt_text: str) -> dict[str, int]:
+    """Return the character position of every contractual header that is present."""
+
+    positions: dict[str, int] = {}
+    for header in (
+        PROMPT_SYSTEM_HEADER,
+        PROMPT_USER_MEMORY_HEADER,
+        PROMPT_PROJECT_HEADER,
+        PROMPT_STORED_EVIDENCE_HEADER,
+        PROMPT_DISCOVERY_HEADER,
+        PROMPT_QUESTION_HEADER,
+    ):
+        found = re.search(rf"(?m)^{re.escape(header)}\s*$", prompt_text)
+        if found is not None:
+            positions[header] = found.start()
+    return positions
 
 
 class _ListLogHandler(logging.Handler):
@@ -90,14 +111,16 @@ def _build_stack(ctx: SimpleNamespace, **overrides: Any) -> SimpleNamespace:
 
     llm = overrides.get("llm") or RecordingLLMProvider()
     user_memory = overrides.get("user_memory") or build_fake_user_memory()
-    providers = provider_trio_for_topic()
-    ingestion_service = IngestionService(
-        scout=ScoutService(list(providers)),
-        repository=ctx.repository,
-        ingestion_repository=ctx.ingestion_repository,
-        reader_service=None,
-        metadata_limit=50,
-    )
+    providers = overrides.get("providers") or provider_trio_for_topic()
+    ingestion_service = overrides.get("ingestion_service")
+    if ingestion_service is None:
+        ingestion_service = IngestionService(
+            scout=ScoutService(list(providers)),
+            repository=ctx.repository,
+            ingestion_repository=ctx.ingestion_repository,
+            reader_service=None,
+            metadata_limit=50,
+        )
     service = ChatService(
         repository=ctx.repository,
         router=ChatRouter(llm_provider=llm),
@@ -105,11 +128,17 @@ def _build_stack(ctx: SimpleNamespace, **overrides: Any) -> SimpleNamespace:
         capture_policy=ctx.capture_policy,
         llm_provider=llm,
         ingestion_service=ingestion_service,
-        embedding_provider=None,
+        embedding_provider=overrides.get("embedding_provider"),
         semantic_index=overrides.get("semantic_index"),
-        budget=None,
+        budget=overrides.get("budget"),
     )
-    return SimpleNamespace(service=service, llm=llm, user_memory=user_memory, providers=providers)
+    return SimpleNamespace(
+        service=service,
+        llm=llm,
+        user_memory=user_memory,
+        providers=providers,
+        ingestion_service=ingestion_service,
+    )
 
 
 async def _resolve_paper(repository: Any, paper_id: str) -> Any:
@@ -393,10 +422,13 @@ async def _scenario_12_project_over_memory(ctx: SimpleNamespace) -> tuple[bool, 
     prompt_text = joined_prompt_text(stack.llm.last_messages)
     project_section = prompt_section(prompt_text, PROMPT_PROJECT_HEADER)
     advisory_section = prompt_section(prompt_text, PROMPT_USER_MEMORY_HEADER)
-    position_memory = prompt_text.find(PROMPT_USER_MEMORY_HEADER)
-    position_project = prompt_text.find(PROMPT_PROJECT_HEADER)
-    position_question = prompt_text.find(PROMPT_QUESTION_HEADER)
-    ordered = -1 < position_memory < position_project < position_question
+    positions = _header_positions(prompt_text)
+    ordered = (
+        -1
+        < positions[PROMPT_USER_MEMORY_HEADER]
+        < positions[PROMPT_PROJECT_HEADER]
+        < positions[PROMPT_QUESTION_HEADER]
+    )
     system_rules = prompt_section(prompt_text, PROMPT_SYSTEM_HEADER).casefold()
     ok = (
         response.mode is ctx.ChatMode.PROJECT_RESEARCH
@@ -406,6 +438,124 @@ async def _scenario_12_project_over_memory(ctx: SimpleNamespace) -> tuple[bool, 
         and ordered
     )
     return ok, "project state marked canonical and outranking"
+
+
+async def _scenario_13_ingestion_outage(ctx: SimpleNamespace) -> tuple[bool, str]:
+    """Ingestion service outage -> degrades to stored evidence only without raising."""
+
+    class FailingIngestion:
+        provider_count = 1
+
+        async def ingest_research_topic(
+            self,
+            query: str,
+            *,
+            limit: int = 20,
+            project_id: str | None = None,
+            auto_read: int = 0,
+        ) -> Any:
+            raise RuntimeError("simulated live discovery outage")
+
+    stack = _build_stack(ctx, ingestion_service=FailingIngestion())
+    response = await stack.service.chat(
+        ctx.ChatRequest(text="find recent papers on non-existent topic xyz")
+    )
+    ok = (
+        response.live_discovery_used is False
+        and response.degraded is False
+        and bool(response.text)
+        and FAKE_LLM_ANSWER in response.text
+    )
+    return ok, f"live_discovery_used={response.live_discovery_used} degraded={response.degraded}"
+
+
+async def _scenario_14_stale_semantic_id(ctx: SimpleNamespace) -> tuple[bool, str]:
+    """Stale semantic index candidate not in SQLite is dropped from evidence and prompt."""
+
+    from e2e.fakes import FakeEmbeddingProvider, FakeSemanticIndex
+
+    from research_radar.semantic.base import SemanticRecord
+
+    stale_paper_id = "ghost-stale-paper-999"
+    embedding = FakeEmbeddingProvider()
+    vector = embedding.embed_texts(["quantum error correction"])[0]
+    index = FakeSemanticIndex()
+    index.upsert(
+        [
+            SemanticRecord(
+                entity_id=f"paper:{stale_paper_id}",
+                entity_type="paper",
+                paper_id=stale_paper_id,
+                vector=vector,
+                publication_year=2024,
+                embedding_schema_version="paper-v1",
+                embedding_model="fake-embedder-v1",
+            )
+        ]
+    )
+    stack = _build_stack(ctx, semantic_index=index, embedding_provider=embedding)
+    response = await stack.service.chat(
+        ctx.ChatRequest(text="find work on quantum error correction")
+    )
+    prompt_text = joined_prompt_text(stack.llm.last_messages)
+    ok = (
+        stale_paper_id not in response.paper_ids
+        and stale_paper_id not in prompt_text
+    )
+    return ok, "stale semantic id discarded"
+
+
+async def _scenario_15_zero_full_reads(ctx: SimpleNamespace) -> tuple[bool, str]:
+    """Live discovery during chat turn passes auto_read=0 and performs zero full PDF reads."""
+
+    from research_radar.research.ingestion import IngestionService
+    from research_radar.research.scout import ScoutService
+
+    class MonitoredReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def read_url(self, *args: Any, **kwargs: Any) -> Any:
+            self.calls += 1
+            raise AssertionError("Full PDF reader was called during chat turn!")
+
+    reader = MonitoredReader()
+    topic = "spin qubit coherence in silicon"
+    providers = provider_trio_for_topic(topic, works=2)
+    recorded_auto_reads: list[int] = []
+
+    class MonitoredIngestion(IngestionService):
+        async def ingest_research_topic(
+            self,
+            query: str,
+            *,
+            limit: int = 20,
+            project_id: str | None = None,
+            auto_read: int = 0,
+        ) -> Any:
+            recorded_auto_reads.append(auto_read)
+            return await super().ingest_research_topic(
+                query, limit=limit, project_id=project_id, auto_read=auto_read
+            )
+
+    monitored_ingestion = MonitoredIngestion(
+        scout=ScoutService(list(providers)),
+        repository=ctx.repository,
+        ingestion_repository=ctx.ingestion_repository,
+        reader_service=reader,  # type: ignore[arg-type]
+        metadata_limit=50,
+    )
+    stack = _build_stack(ctx, ingestion_service=monitored_ingestion, providers=providers)
+    response = await stack.service.chat(
+        ctx.ChatRequest(text=f"find recent papers on {topic}")
+    )
+    ok = (
+        response.live_discovery_used is True
+        and len(recorded_auto_reads) == 1
+        and recorded_auto_reads[0] == 0
+        and reader.calls == 0
+    )
+    return ok, f"auto_read={recorded_auto_reads} reader_calls={reader.calls}"
 
 
 SCENARIOS = (
@@ -421,6 +571,9 @@ SCENARIOS = (
     ("secret-bearing message never captured or logged", _scenario_10_secret),
     ("personal belief confined to advisory prompt section", _scenario_11_belief_placement),
     ("explicit project state outranks Graphiti fact", _scenario_12_project_over_memory),
+    ("ingestion outage degrades to stored evidence only", _scenario_13_ingestion_outage),
+    ("stale semantic candidate ID never becomes evidence", _scenario_14_stale_semantic_id),
+    ("live discovery chat turn performs zero full PDF reads", _scenario_15_zero_full_reads),
 )
 
 

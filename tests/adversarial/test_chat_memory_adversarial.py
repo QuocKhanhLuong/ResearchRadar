@@ -1177,3 +1177,38 @@ async def test_total_discovered_papers_stay_within_the_per_turn_bound(
         f"{len(providers)} providers; the per-turn bound is 12"
     )
     assert len(response.paper_ids) <= 12
+
+
+async def test_chat_turn_never_triggers_full_pdf_reads(
+    repository: ResearchRepository, database: Database
+) -> None:
+    """Claim: live discovery during chat passes auto_read=0 and never reads PDFs."""
+
+    class MonitoredReader:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def read_url(self, *args: object, **kwargs: object) -> object:
+            self.calls += 1
+            raise AssertionError("Full PDF read was invoked during chat turn!")
+
+    reader = MonitoredReader()
+    provider = RecordingProvider(
+        [_dup_paper("2501.00099", "Low field MRI reconstruction via learned priors")]
+    )
+    inner = IngestionService(
+        scout=ScoutService([provider]),
+        repository=repository,
+        ingestion_repository=IngestionRepository(database),
+        reader_service=reader,  # type: ignore[arg-type]
+        metadata_limit=50,
+    )
+    ingestion = CountedIngestion(inner)
+    service = _service(repository, llm=ScriptedLLM(), ingestion=ingestion)
+
+    response = await service.chat(ChatRequest(text=RESEARCH_QUESTION))
+
+    assert isinstance(response, ChatResponse)
+    assert response.live_discovery_used is True
+    assert reader.calls == 0
+

@@ -1,9 +1,9 @@
 # Adversarial QA Audit — Personal Research Chat & Memory (W12)
 
 Scope: falsification attempts against every claim in `docs/phase_tasks/W12.md`.
-Owned artefacts: `tests/adversarial/test_chat_memory_adversarial.py` (21 tests,
-one per claim), `tests/adversarial/__init__.py`, this document. No production
-file was modified.
+Owned artefacts: `tests/adversarial/test_chat_memory_adversarial.py` (23 tests,
+covering all falsification claims and regression boundaries),
+`tests/adversarial/__init__.py`, this document. No production file was modified.
 
 ## 0. Method and verification status
 
@@ -162,6 +162,15 @@ upstream failure.
   received ≤ 12 end-to-end. Mutation: passing `max_discovery_results` through
   unclamped → caught. Note `ChatBudget` is a plain frozen dataclass, so the
   clamp lives entirely in ChatService — worth an integration-review glance.
+- **4.4 Total discovered papers stay within per-turn bound across all providers**
+  `test_total_discovered_papers_stay_within_the_per_turn_bound` — with multiple
+  providers (e.g. 3 providers returning 12 papers each), the turn-level request
+  is properly partitioned and clamped such that at most 12 total papers are
+  canonicalized and returned in `ChatResponse.paper_ids`.
+- **4.5 Zero full PDF reads during live discovery chat turn**
+  `test_chat_turn_never_triggers_full_pdf_reads` — chat live discovery always
+  enforces `auto_read=0`, and reader service / full PDF parsing is never called
+  during a chat turn.
 
 ## 5. Event-loop safety
 
@@ -254,8 +263,10 @@ worktree. Items for integration review, in priority order:
 
 ## 9. Verdict
 
-21 adversarial tests written, validated against a contract-conformant oracle
-(21/21 pass) and a 19-mutation study (all true violations caught; both
-non-catches confirmed conformant). Suite is green-skipped pre-integration and
-goes live automatically. No production defect is currently fileable; the five
+23 adversarial tests written, validated against a contract-conformant oracle
+(23/23 pass) and a 19-mutation study (all true violations caught; both
+non-catches confirmed conformant). The offline E2E harness and standalone
+smoke test cover all 15 core scenarios (including outages, filters, secrets,
+evidence boundaries, authority outranking, stale semantic IDs, and zero full reads).
+Suite is fully green offline. No production defect is currently fileable; the five
 integration-watch items above carry the audit's findings forward.
