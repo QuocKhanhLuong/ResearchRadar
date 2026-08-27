@@ -65,3 +65,28 @@ for your application:
 - Leaving `USER_MEMORY_BACKEND` unset or `disabled` keeps chat fully
   functional — personal memory is advisory context only, never scientific
   evidence.
+
+## Timeouts
+
+`HTTP_TIMEOUT_SECONDS` bounds every outbound HTTP call — scholarly providers,
+PDF fetches, and the LLM endpoint — and is validated to `0 < value <= 120`. It
+defaults to **60**, which the composition root injects into every provider and
+into the shared `httpx.AsyncClient`. Lower it for a fast local gateway; raise it
+towards the cap when a remote LLM does long structured generations.
+
+## Credential safety on the chat surface
+
+Two independent rules keep credentials out of durable state, and neither
+depends on the user noticing what they pasted:
+
+- `MemoryCapturePolicy` rejects an entire message when it detects
+  credential-shaped content, so a secret never becomes a memory episode.
+- `ChatService` redacts credential-shaped spans from the turn text *before*
+  routing. This matters because routing normalizes the message into a retrieval
+  query, and that query is what reaches the ingestion provenance rows in SQLite,
+  the outbound scholarly-provider requests, and the synthesis prompt. Redaction
+  upstream of routing is what stops a pasted key from reaching any of them.
+
+Detection is shape-based (`research_radar.memory.secrets`), so it is a strong
+backstop rather than a guarantee; treat it as defence in depth, not a licence to
+paste credentials into chat.

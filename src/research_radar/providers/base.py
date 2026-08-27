@@ -10,7 +10,7 @@ import httpx
 
 from research_radar.models.paper import Paper
 
-DEFAULT_HTTP_TIMEOUT_SECONDS = 20.0
+DEFAULT_HTTP_TIMEOUT_SECONDS = 60.0
 DEFAULT_HTTP_CONNECT_TIMEOUT_SECONDS = 5.0
 
 

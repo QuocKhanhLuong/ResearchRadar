@@ -7,9 +7,18 @@ covering all falsification claims and regression boundaries),
 
 ## 0. Method and verification status
 
+> **Post-integration status (final review pass).** The modules under test now
+> exist and the suite is LIVE: all 23 tests execute and pass against the
+> integrated branch, with none skipped. The paragraph below describes the
+> worktree as it stood when the suite was written, and is kept for provenance.
+> Two of the five items in section 8 have since been resolved — see the status
+> notes there, and section 8 of
+> `docs/audits/phase_chat_memory_integration.md` for the defects the final
+> review found in production code.
+
 The modules under test (`research_radar.chat`, `research_radar.memory`,
-`research_radar.bot.mention`, `research_radar.bot.commands.memory`) do not
-exist in this worktree yet — they are written concurrently by W2–W10. The
+`research_radar.bot.mention`, `research_radar.bot.commands.memory`) did not
+exist in that worktree — they are written concurrently by W2–W10. The
 suite therefore guards every import at module level
 (`pytest.importorskip("research_radar.memory")` /
 `pytest.importorskip("research_radar.chat")` plus function-level skips for the
@@ -239,18 +248,30 @@ conformant; the observable invariant is what the suite pins down.
 No production-code defect can be filed yet — the modules do not exist in this
 worktree. Items for integration review, in priority order:
 
-1. **(Medium, watch at integration)** Contract §7 routes durable statements to
+1. **(Medium — RESOLVED at integration.** Verified against the shipped
+   `MemoryCapturePolicy`: every imperative research command tested
+   (`find`, `search for`, `compare`, `summarize`, `show me`, `list`,
+   `look up`) is rejected as `not_durable`, pinned by
+   `test_imperative_research_commands_not_stored`. The final review found a
+   *different* capture defect the oracle did not model — questions containing a
+   classifier phrase were stored as assertions — now fixed; see section 8.2 of
+   the integration audit.**) Contract §7 routes durable statements to
    CONVERSATIONAL and lets `MemoryCapturePolicy` decide storage afterwards.
    During oracle-building, a naive policy happily stored imperative research
    commands ("find recent papers on X") as durable preferences. Tests 2.1/2.2
    pin the question case; reviewers should also confirm W4 rejects
    task-shaped imperatives, otherwise episodes fill with commands.
-2. **(Low)** `ChatBudget.max_discovery_results` has no validator (frozen
-   dataclass); the ≤12 clamp exists only in ChatService (§4.3 test pins it).
-   If any future call path bypasses the service, the clamp vanishes.
-3. **(Info)** `MemoryStatus.persistence_path` may expose absolute filesystem
-   paths. Not a credential and acceptable for a single-user daemon; noted so
-   it is a decision rather than an accident.
+2. **(Low — RESOLVED.)** `ChatBudget.max_discovery_results` had no validator
+   (frozen dataclass); the ≤12 clamp existed only in ChatService (§4.3 test
+   pins it), so any future call path bypassing the service lost the bound.
+   `ChatBudget.__post_init__` now validates `1 <= max_discovery_results <= 12`
+   and rejects negative list bounds; the service clamp is kept as defence in
+   depth. See section 8.3 of the integration audit.
+3. **(Info — ACCEPTED.)** `MemoryStatus.persistence_path` may expose absolute
+   filesystem paths. Not a credential and acceptable for a single-user daemon;
+   noted so it is a decision rather than an accident. Re-affirmed at final
+   review: the embed is owner-gated and ephemeral, and the path is what an
+   operator needs when diagnosing the backend.
 4. **(Info, test-side robustness)** The spy LLM resolves W6/W8's synthesis
    model fields heuristically and fails loudly listing the model's real fields
    if naming diverges from repo conventions (`referenced_paper_ids` et al.).
@@ -263,10 +284,16 @@ worktree. Items for integration review, in priority order:
 
 ## 9. Verdict
 
-23 adversarial tests written, validated against a contract-conformant oracle
-(23/23 pass) and a 19-mutation study (all true violations caught; both
+23 adversarial tests written, now live and green against the integrated
+branch (23/23 pass, none skipped), and originally validated against a
+contract-conformant oracle (23/23 pass) and a 19-mutation study (all true violations caught; both
 non-catches confirmed conformant). The offline E2E harness and standalone
 smoke test cover all 15 core scenarios (including outages, filters, secrets,
 evidence boundaries, authority outranking, stale semantic IDs, and zero full reads).
-Suite is fully green offline. No production defect is currently fileable; the five
-integration-watch items above carry the audit's findings forward.
+Suite is fully green offline. No production defect was fileable from this
+worktree at the time of writing; of the five integration-watch items above,
+items 1 and 2 have since been resolved and item 3 accepted. The final review
+pass on the integrated branch did file two HIGH production defects (credential
+leakage through the research path, and questions stored as durable memory) —
+both fixed, both outside what this suite modelled. See section 8 of
+`docs/audits/phase_chat_memory_integration.md`.

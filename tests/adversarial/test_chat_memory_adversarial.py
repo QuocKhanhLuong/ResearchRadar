@@ -864,7 +864,11 @@ async def test_discovery_limit_hard_clamped_before_provider_layer(
 
     papers = [_dup_paper("2501.00042", "Low field MRI reconstruction via learned priors")]
     ingestion, provider = _live_stack(repository, database, papers)
-    budget = ChatBudget(max_discovery_results=50)
+    # ChatBudget now rejects 50 at construction. The clamp inside ChatService is
+    # the second line of defence, so the hostile value is forced onto the frozen
+    # instance to model a budget that reached the service without validation.
+    budget = ChatBudget()
+    object.__setattr__(budget, "max_discovery_results", 50)
     llm = ScriptedLLM()
     service = _service(repository, llm=llm, ingestion=ingestion, budget=budget)
 

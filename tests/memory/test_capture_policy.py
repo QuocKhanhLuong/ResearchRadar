@@ -297,3 +297,49 @@ class TestTemporalPlanVariations:
         assert decision.should_store is True
         assert decision.memory_class == MemoryClass.TEMPORAL_PLAN
 
+
+
+class TestInterrogativeSentencesAreNeverStored:
+    """A question that merely CONTAINS a durable phrase is still a question.
+
+    Classifying the raw message let an interrogative be read as an assertion:
+    "should I drop the GAN baseline?" was stored as a REJECTED_IDEA, recording
+    the opposite of what the user said. Only non-interrogative sentences are
+    classified, and only those are persisted.
+    """
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "what do I prefer for training frameworks?",
+            "what do I like about diffusion models?",
+            "do I usually use pytest or unittest?",
+            "should I drop the GAN baseline?",
+            "can you remember what I decided about kuzu?",
+            "did we decide to go with SQLite?",
+            "is my goal still low-field MRI reconstruction?",
+            "what am I working on this week?",
+        ],
+    )
+    def test_first_person_question_is_not_stored(self, question: str) -> None:
+        decision = MemoryCapturePolicy().evaluate_user_message(question)
+        assert decision.should_store is False
+        assert decision.reason == "question_not_durable"
+        assert decision.redacted_text == ""
+
+    def test_tag_question_after_a_decision_is_still_stored(self) -> None:
+        """A decision with a tag question attached is a decision, not a question."""
+
+        text = "We decided to go with SQLite - any objections?"
+        decision = MemoryCapturePolicy().evaluate_user_message(text)
+        assert decision.should_store is True
+        assert decision.memory_class == MemoryClass.PROJECT_DECISION
+
+    def test_statement_beside_a_question_stores_only_the_statement(self) -> None:
+        decision = MemoryCapturePolicy().evaluate_user_message(
+            "I prefer polars over pandas. What papers cover it?"
+        )
+        assert decision.should_store is True
+        assert decision.memory_class == MemoryClass.TOOL_PREFERENCE
+        assert decision.redacted_text == "I prefer polars over pandas."
+        assert "What papers cover it?" not in decision.redacted_text

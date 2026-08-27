@@ -12,7 +12,7 @@ def test_settings_have_safe_defaults() -> None:
     assert settings.database_url == "sqlite:///data/research_radar.db"
     assert settings.llm_provider == "mock"
     assert settings.watch_scan_hours == 6
-    assert settings.http_timeout_seconds == 20
+    assert settings.http_timeout_seconds == 60
 
 
 def test_discord_token_is_required_only_when_requested() -> None:

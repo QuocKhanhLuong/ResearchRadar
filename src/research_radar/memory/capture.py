@@ -14,9 +14,13 @@ Rejection precedence inside :meth:`MemoryCapturePolicy.evaluate_user_message`:
 4. stack traces,
 5. shell/log dumps,
 6. raw PDF-style text dumps,
-7. non-durable chatter (greetings/thanks/acks, bare questions, too-short),
-8. classification; ambiguous but clearly durable first-person statements
-   fall back to ``MemoryClass.PREFERENCE`` instead of being dropped.
+7. non-durable chatter (greetings/thanks/acks),
+8. interrogative sentences are stripped out; a message left with nothing but
+   questions is rejected, and only the surviving statement is ever classified
+   or persisted,
+9. too-short remainder,
+10. classification; ambiguous but clearly durable first-person statements
+    fall back to ``MemoryClass.PREFERENCE`` instead of being dropped.
 
 Assistant output is never stored, unconditionally.
 """
@@ -154,6 +158,37 @@ _CHATTER_PHRASES = frozenset(
         "see you later", "talk soon", "go ahead", "carry on", "as you wish",
     }
 )
+
+
+# A message is split into sentences so an interrogative clause can be dropped
+# without discarding a durable statement that sits beside it. A sentence counts
+# as interrogative only when it BOTH ends in a question mark AND opens with an
+# interrogative word or a fronted auxiliary — the shape of an actual question.
+# That distinction is the whole point: "what do I prefer for training?" is a
+# question about stored memory and must never itself become memory, while "We
+# decided to go with SQLite - any objections?" is a decision with a tag question
+# attached and must still be captured.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_INTERROGATIVE_SENTENCE_RE = re.compile(
+    r"(?i)^\s*(?:who|whom|whose|what|which|when|where|why|how"
+    r"|do|does|did|is|are|am|was|were|be|been|can|could|shall|should"
+    r"|will|would|may|might|must|have|has|had)\b.*\?\s*$",
+    re.DOTALL,
+)
+
+
+def _statement_text(text: str) -> str:
+    """Return the text with every interrogative sentence removed.
+
+    Returns "" when the message is nothing but questions, which is the signal
+    the caller uses to reject it as ``question_not_durable``.
+    """
+    kept = [
+        sentence.strip()
+        for sentence in _SENTENCE_SPLIT_RE.split(text)
+        if sentence.strip() and not _INTERROGATIVE_SENTENCE_RE.match(sentence.strip())
+    ]
+    return " ".join(kept).strip()
 
 
 def _is_pure_chatter(text: str) -> bool:
@@ -344,19 +379,27 @@ class MemoryCapturePolicy:
         if _is_pure_chatter(stripped):
             return CaptureDecision(False, None, REASON_CHATTER, "")
 
-        classified = _classify(stripped)
-        is_question = stripped.endswith("?")
-        if is_question and classified is None:
+        # Classify only the non-interrogative part, and persist only that part.
+        # Classifying the raw message instead lets a phrase that happens to sit
+        # inside a question be read as an assertion: "should I drop the GAN
+        # baseline?" would be stored as a REJECTED_IDEA, inverting what the user
+        # actually said.
+        statement = _statement_text(stripped)
+        if not statement:
+            return CaptureDecision(False, None, REASON_QUESTION, "")
+
+        classified = _classify(statement)
+        if statement.endswith("?") and classified is None:
             return CaptureDecision(False, None, REASON_QUESTION, "")
         if classified is not None:
-            return self._accept(classified, stripped)
-        if len(stripped) < 15:
+            return self._accept(classified, statement)
+        if len(statement) < 15:
             return CaptureDecision(False, None, REASON_TOO_SHORT, "")
 
         # Ambiguous but clearly durable first-person statements fall back to
         # PREFERENCE rather than being dropped.
-        if _has_first_person(stripped) and _FALLBACK_CUE_RE.search(stripped):
-            return self._accept(MemoryClass.PREFERENCE, stripped)
+        if _has_first_person(statement) and _FALLBACK_CUE_RE.search(statement):
+            return self._accept(MemoryClass.PREFERENCE, statement)
         return CaptureDecision(False, None, REASON_NOT_DURABLE, "")
 
     def evaluate_assistant_message(self, text: str) -> CaptureDecision:

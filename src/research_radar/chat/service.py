@@ -3,6 +3,9 @@
 Pipeline per chat turn, in contracted order:
 
 1. Normalize the query; empty text returns a usage hint with zero backend calls.
+   Credential-shaped spans are then redacted, and every later step in this list
+   sees only the redacted text — so a pasted secret can reach neither the
+   ingestion provenance rows, nor the scholarly providers, nor the prompt.
 2. Route deterministically via :class:`~research_radar.chat.router.ChatRouter`.
 3. Load advisory user memory when the route needs it (never raises).
 4. Load explicit :class:`ProjectMemory` from SQLite for project turns.
@@ -15,7 +18,9 @@ Pipeline per chat turn, in contracted order:
 8. Validate cited ids against the packet; unknown ids are dropped.
 9. Build the :class:`ChatResponse`.
 10. Capture runs LAST, after a successful response, and only via
-    :class:`~research_radar.memory.capture.MemoryCapturePolicy`.
+    :class:`~research_radar.memory.capture.MemoryCapturePolicy`. It is handed
+    the ORIGINAL text, not the redacted one, so the policy still rejects a
+    secret-bearing message outright instead of persisting a redacted stub.
 
 Failure behaviour: LLM missing/failing yields a concise safe error with
 ``degraded=True`` (discovered-and-stored paper ids are still reported) and NO
@@ -31,7 +36,7 @@ import asyncio
 import logging
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,6 +53,7 @@ from research_radar.chat.router import ChatRouter, RouteDecision
 from research_radar.memory.base import UserMemoryStore
 from research_radar.memory.capture import MemoryCapturePolicy
 from research_radar.memory.models import UserMemoryContext
+from research_radar.memory.secrets import redact_secrets
 from research_radar.models.paper_card import PaperCard
 from research_radar.reader.llm.base import LLMMessage, LLMProvider
 from research_radar.research.hybrid import HybridRetriever
@@ -73,22 +79,9 @@ _USAGE_HINT = (
 
 _DEGRADED_REPLY = "I couldn't synthesize an answer right now. Please try again soon."
 
-_SYSTEM_RULES = (
-    "You are ResearchRadar, a private single-user research assistant.\n"
-    "RULES:\n"
-    "1. Treat USER MEMORY as advisory personal context only - never as "
-    "scientific support or a published result.\n"
-    "2. Never present a user hypothesis or belief as an established finding.\n"
-    "3. Never claim the literature contains no work on a topic; the corpus is "
-    "partial.\n"
-    "4. Cite only the paper ids and gap ids listed in the evidence sections.\n"
-    "5. Distinguish stored full-text PaperCard evidence from abstract-only "
-    "metadata, and say explicitly when an answer rests only on abstract- or "
-    "discovery-level information.\n"
-    "6. Say when the available evidence is insufficient rather than inventing "
-    "an answer.\n"
-    "7. When EXPLICIT PROJECT MEMORY and USER MEMORY conflict, EXPLICIT "
-    "PROJECT MEMORY wins."
+_REDACTION_LOG_MESSAGE = (
+    "Credential-shaped text was redacted from a chat turn before routing, "
+    "retrieval, discovery, and synthesis."
 )
 
 
@@ -106,15 +99,17 @@ class ChatAnswer(BaseModel):
 class ChatBudget:
     """Bounded retrieval, discovery, and synthesis limits for chat turns.
 
-    ``max_discovery_results`` is additionally hard-clamped to 12 inside the
-    service regardless of what a caller supplies. Seed this field from
-    ``Settings.chat_live_discovery_limit`` at composition time so the configured
-    setting participates in the clamp. ``auto_read_pdfs`` must remain 0 in this
-    phase: mention chat never performs automatic full-PDF reads.
+    ``max_discovery_results`` is validated here AND hard-clamped to 12 inside
+    the service. The validator is what makes the bound hold for any future call
+    path that reaches ingestion without going through :meth:`ChatService.chat`;
+    the clamp alone lives too far downstream to be a guarantee. Seed this field
+    from ``Settings.chat_live_discovery_limit`` at composition time so the
+    configured setting participates in both. ``auto_read_pdfs`` must remain 0 in
+    this phase: mention chat never performs automatic full-PDF reads.
     """
 
     max_stored_evidence: int = 8
-    max_discovery_results: int = 10  # hard-clamped to 12
+    max_discovery_results: int = 10  # validated <= 12, hard-clamped again in the service
     max_user_memory_facts: int = 8
     stored_sufficiency_threshold: int = 3
     auto_read_pdfs: int = 0  # must remain 0 in this phase
@@ -122,6 +117,13 @@ class ChatBudget:
     def __post_init__(self) -> None:
         if self.auto_read_pdfs != 0:
             raise ValueError("ChatBudget.auto_read_pdfs must remain 0 in this phase.")
+        if not 1 <= self.max_discovery_results <= _HARD_MAX_DISCOVERY_RESULTS:
+            raise ValueError(
+                "ChatBudget.max_discovery_results must be between 1 and "
+                f"{_HARD_MAX_DISCOVERY_RESULTS}."
+            )
+        if self.max_stored_evidence < 0 or self.max_user_memory_facts < 0:
+            raise ValueError("ChatBudget list bounds cannot be negative.")
 
 
 def _clip(text: str | None, max_chars: int) -> str | None:
@@ -205,9 +207,22 @@ class ChatService:
     async def chat(self, request: ChatRequest) -> ChatResponse:
         """Run the ten-step pipeline for one chat turn."""
 
-        query = " ".join((request.text or "").split())
+        raw_text = request.text or ""
+        query = " ".join(raw_text.split())
         if not query:
             return ChatResponse(text=_USAGE_HINT, mode=ChatMode.CONVERSATIONAL)
+
+        # Everything downstream of this point works from the redacted text.
+        # A credential pasted into a mention would otherwise be normalized into
+        # a retrieval query and reach three places it must never reach: the
+        # ingestion provenance rows in SQLite, the outbound scholarly-provider
+        # HTTP requests, and the synthesis prompt. Capture keeps reading the
+        # ORIGINAL text so MemoryCapturePolicy can still reject the whole
+        # message on `contains_secret` rather than storing a redacted stub.
+        safe_query = redact_secrets(query)
+        if safe_query != query:
+            logger.warning("%s", _REDACTION_LOG_MESSAGE)
+        request = replace(request, text=safe_query)
 
         decision = await self._router.route(request)
 
@@ -249,7 +264,7 @@ class ChatService:
             evidence_scope=packet.evidence_scope,
             degraded=False,
         )
-        await self._capture(request.text)
+        await self._capture(raw_text)
         return response
 
     async def _load_user_memory(

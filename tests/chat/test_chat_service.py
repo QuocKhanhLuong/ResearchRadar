@@ -190,6 +190,22 @@ class ExplodingCapturePolicy:
         raise AssertionError("capture policy must not be evaluated")
 
 
+def _unclamped_budget(**overrides: Any) -> ChatBudget:
+    """Build a ChatBudget carrying a value its own validator would reject.
+
+    ``ChatBudget.__post_init__`` bounds ``max_discovery_results`` at
+    construction, so a hostile value can no longer arrive through the
+    constructor. The service-side clamp still has to hold for a budget that
+    reached the service some other way, which is exactly what forcing the field
+    onto the frozen instance models.
+    """
+
+    budget = ChatBudget()
+    for name, value in overrides.items():
+        object.__setattr__(budget, name, value)
+    return budget
+
+
 def _service(
     repository: ResearchRepository,
     *,
@@ -383,7 +399,7 @@ async def test_discovery_limit_is_hard_clamped_to_twelve(
         repository,
         llm=ScriptedChatLLM(),
         ingestion=ingestion,
-        budget=ChatBudget(max_discovery_results=999),
+        budget=_unclamped_budget(max_discovery_results=999),
     )
 
     await service.chat(ChatRequest(text=RESEARCH_QUERY))
@@ -401,7 +417,7 @@ async def test_discovery_limit_floors_at_one_for_zero_or_negative_budgets(
             repository,
             llm=ScriptedChatLLM(),
             ingestion=ingestion,
-            budget=ChatBudget(max_discovery_results=invalid),
+            budget=_unclamped_budget(max_discovery_results=invalid),
         )
         await service.chat(ChatRequest(text=RESEARCH_QUERY))
 
@@ -872,3 +888,93 @@ async def test_llm_failure_on_stored_evidence_returns_no_paper_ids(
     assert response.live_discovery_used is False
     assert response.paper_ids == ()
     assert "couldn't synthesize an answer" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Credential-shaped input is redacted before it can leave the process.
+# ---------------------------------------------------------------------------
+
+FAKE_CREDENTIAL = "sk-ant-api03-AbCdEf0123456789AbCdEf0123456789"
+
+
+async def test_secret_in_a_research_message_never_reaches_ingestion_or_the_prompt(
+    repository: ResearchRepository,
+) -> None:
+    """A pasted credential must not become a retrieval query.
+
+    Routing normalizes the message into ``search_query``, which is handed to
+    ingestion verbatim and from there lands in the ingestion provenance rows and
+    the outbound provider requests. Redaction happens before routing so none of
+    those three destinations can see the original value.
+    """
+
+    memory = FakeUserMemoryStore()
+    llm = ScriptedChatLLM()
+    ingestion = RecordingIngestionService(repository, _discovery_batch(1))
+
+    response = await _service(
+        repository, memory=memory, llm=llm, ingestion=ingestion
+    ).chat(ChatRequest(text=f"{RESEARCH_QUERY} {FAKE_CREDENTIAL}"))
+
+    assert ingestion.calls, "live discovery did not run; the test proves nothing"
+    assert all(FAKE_CREDENTIAL not in call["query"] for call in ingestion.calls)
+    assert all("[REDACTED]" in call["query"] for call in ingestion.calls)
+
+    prompt_text = "\n".join(message.content for message in llm.last_messages)
+    assert FAKE_CREDENTIAL not in prompt_text
+    assert FAKE_CREDENTIAL not in response.text
+    assert not memory.episodes
+
+
+async def test_secret_bearing_message_is_rejected_by_capture_not_stored_redacted(
+    repository: ResearchRepository,
+) -> None:
+    """Capture still sees the ORIGINAL text so the whole message is rejected.
+
+    Handing capture the redacted text instead would turn a hard rejection into a
+    stored ``[REDACTED]`` stub, quietly weakening the policy's secret rule.
+    """
+
+    memory = FakeUserMemoryStore()
+
+    response = await _service(repository, memory=memory, llm=ScriptedChatLLM()).chat(
+        ChatRequest(text=f"I prefer rotating my key {FAKE_CREDENTIAL} every week")
+    )
+
+    assert response.degraded is False
+    assert not memory.episodes
+
+
+async def test_redaction_leaves_ordinary_messages_untouched(
+    repository: ResearchRepository,
+) -> None:
+    memory = FakeUserMemoryStore()
+
+    await _service(repository, memory=memory, llm=ScriptedChatLLM()).chat(
+        ChatRequest(text=DURABLE_STATEMENT)
+    )
+
+    assert [episode.content for episode in memory.episodes] == [DURABLE_STATEMENT]
+
+
+# ---------------------------------------------------------------------------
+# ChatBudget validates its own bounds, independently of the service clamp.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("invalid", [0, -5, 13, 999])
+def test_chat_budget_rejects_out_of_range_discovery_limits(invalid: int) -> None:
+    with pytest.raises(ValueError, match="max_discovery_results"):
+        ChatBudget(max_discovery_results=invalid)
+
+
+@pytest.mark.parametrize("valid", [1, 10, 12])
+def test_chat_budget_accepts_the_contracted_discovery_range(valid: int) -> None:
+    assert ChatBudget(max_discovery_results=valid).max_discovery_results == valid
+
+
+def test_chat_budget_rejects_negative_list_bounds() -> None:
+    with pytest.raises(ValueError, match="cannot be negative"):
+        ChatBudget(max_stored_evidence=-1)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        ChatBudget(max_user_memory_facts=-1)

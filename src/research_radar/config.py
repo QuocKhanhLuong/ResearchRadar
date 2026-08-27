@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_base_url: str | None = None
     llm_api_key: SecretStr | None = None
-    http_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    http_timeout_seconds: float = Field(default=60.0, gt=0, le=120)
 
     artifact_root: str = "data/artifacts"
 

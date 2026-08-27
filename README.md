@@ -101,7 +101,7 @@ or API key.
 | `LLM_MODEL` | With a remote LLM | — | Model name accepted by the OpenAI-compatible endpoint. |
 | `LLM_BASE_URL` | With a remote LLM | — | Base URL for an OpenAI-compatible chat-completions endpoint. |
 | `LLM_API_KEY` | Endpoint-dependent | — | Optional bearer credential for the remote endpoint. |
-| `HTTP_TIMEOUT_SECONDS` | No | `20` | Bounded timeout for external HTTP requests. |
+| `HTTP_TIMEOUT_SECONDS` | No | `60` | Bounded timeout for external HTTP requests. |
 | `ARTIFACT_ROOT` | No | `data/artifacts` | Root directory for content-addressed PDF, text, and section artifacts. |
 | `INGESTION_METADATA_LIMIT` | No | `50` | Upper bound on papers stored by one `/ingest` run. |
 | `EMBEDDING_PROVIDER` | No | `disabled` | `disabled` or `local`. `local` needs the `embeddings` extra and loads its model lazily. |
