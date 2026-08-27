@@ -86,6 +86,20 @@ class TestVendorApiKeys:
         key = _fake_key("xoxb-", "000000000000-fake-fake-fake")
         assert contains_secret(key)
 
+    def test_pinecone_key_with_underscores_and_hyphens(self) -> None:
+        key = _fake_key("pcsk_", "fake_key_0000_1111-2222")
+        assert contains_secret(key)
+        expected = f"pinecone key {REDACTED_PLACEHOLDER} active"
+        assert redact_secrets(f"pinecone key {key} active") == expected
+
+    def test_perplexity_key_with_hyphens(self) -> None:
+        key = _fake_key("pplx-", "fake-key-0000-1111-2222")
+        assert contains_secret(key)
+
+    def test_groq_key_with_underscores(self) -> None:
+        key = _fake_key("gsk_", "fake_key_0000_1111_2222")
+        assert contains_secret(key)
+
 
 class TestBearerHeaders:
     """Authorization headers and bare bearer tokens."""
@@ -130,6 +144,16 @@ class TestAssignments:
 
     def test_aws_secret_access_key_env_shape(self) -> None:
         assert contains_secret("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLExx")
+
+    def test_quoted_assignment_in_code_block(self) -> None:
+        text = 'config = {"api_key": "supersecretkey123"}'
+        assert contains_secret(text)
+        assert "supersecretkey123" not in redact_secrets(text)
+
+    def test_single_quoted_assignment(self) -> None:
+        text = "export client_secret='verysecrettoken123'"
+        assert contains_secret(text)
+        assert "verysecrettoken123" not in redact_secrets(text)
 
 
 class TestAwsCredentials:

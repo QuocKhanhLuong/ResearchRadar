@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 from dataclasses import asdict
 
+import pytest
+
 from research_radar.memory.capture import CaptureDecision, MemoryCapturePolicy
 from research_radar.memory.models import MemoryClass
 from research_radar.memory.secrets import REDACTED_PLACEHOLDER, contains_secret, redact_secrets
@@ -252,3 +254,46 @@ class TestClassification:
         text = "I like turtles, especially hatchlings."
         decision = MemoryCapturePolicy().evaluate_user_message(text)
         assert decision.redacted_text == redact_secrets("I like turtles, especially hatchlings.")
+
+
+class TestImperativeResearchCommands:
+    """Imperative commands and research queries must not be captured as user memory."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "find recent papers on low-field MRI reconstruction",
+            "search for papers on diffusion policy in robotics",
+            "compare Transformer and Mamba architectures for long contexts",
+            "summarize the latest work on protein structure prediction",
+            "give me an overview of neural radiance fields",
+            "list the top benchmarks for retrieval augmented generation",
+        ],
+    )
+    def test_imperative_research_commands_not_stored(self, command: str) -> None:
+        decision = MemoryCapturePolicy().evaluate_user_message(command)
+        assert decision.should_store is False
+        assert decision.reason in {"not_durable", "question_not_durable"}
+        assert decision.redacted_text == ""
+
+
+class TestTemporalPlanVariations:
+    """Explicit temporal plans with first-person markers are classified as TEMPORAL_PLAN."""
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "I'm giving the lab talk tomorrow.",
+            "I will submit the revised manuscript by next week.",
+            "We plan to wrap up the evaluation in 2 weeks.",
+            "I have a meeting with my advisor on Friday.",
+            "I'm presenting our findings at NeurIPS in December.",
+            "We need to finalize the paper by EOD.",
+            "I am scheduled to run experiments tonight.",
+        ],
+    )
+    def test_temporal_plans_classified_correctly(self, statement: str) -> None:
+        decision = MemoryCapturePolicy().evaluate_user_message(statement)
+        assert decision.should_store is True
+        assert decision.memory_class == MemoryClass.TEMPORAL_PLAN
+

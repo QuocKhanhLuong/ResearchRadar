@@ -39,9 +39,9 @@ _API_KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
     # OpenAI legacy/project and Anthropic keys all start with sk-; the charset
     # includes '-' so sk-ant-api03-... and sk-proj-... are covered transitively.
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),
-    re.compile(r"\bpcsk_[A-Za-z0-9]{16,}"),  # Pinecone
-    re.compile(r"\bpplx-[A-Za-z0-9]{16,}"),  # Perplexity
-    re.compile(r"\bgsk_[A-Za-z0-9]{16,}"),  # Groq
+    re.compile(r"\bpcsk_[A-Za-z0-9_-]{16,}"),  # Pinecone
+    re.compile(r"\bpplx-[A-Za-z0-9_-]{16,}"),  # Perplexity
+    re.compile(r"\bgsk_[A-Za-z0-9_-]{16,}"),  # Groq
     re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),  # Google API keys are AIza+35
     re.compile(r"\bghp_[A-Za-z0-9]{30,}"),  # GitHub classic PATs are ghp_+36
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),  # GitHub fine-grained PATs

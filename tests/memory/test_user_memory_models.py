@@ -112,3 +112,35 @@ def test_memory_status_has_no_secret_shaped_surface() -> None:
         assert len(status.detail) < 64
         for marker in ("sk-", "sk-ant-", "pcsk_", "Bearer ", "Authorization:", "password"):
             assert marker not in status.detail
+
+
+def test_user_memory_context_is_frozen() -> None:
+    """UserMemoryContext instances cannot be mutated."""
+
+    context = UserMemoryContext()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        context.degraded = True  # type: ignore[misc]
+
+
+def test_memory_status_is_frozen() -> None:
+    """MemoryStatus instances cannot be mutated."""
+
+    status = MemoryStatus(backend="disabled", enabled=False, healthy=True)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        status.healthy = False  # type: ignore[misc]
+
+
+def test_memory_models_have_slots() -> None:
+    """All memory value types use slots for memory efficiency and safety."""
+
+    for model_cls in (MemoryFact, UserMemoryContext, MemoryStatus):
+        assert hasattr(model_cls, "__slots__")
+        instance = (
+            model_cls(fact="test")
+            if model_cls is MemoryFact
+            else model_cls(backend="test", enabled=True, healthy=True)
+            if model_cls is MemoryStatus
+            else model_cls()
+        )
+        assert not hasattr(instance, "__dict__")
+
