@@ -88,6 +88,14 @@ class Settings(BaseSettings):
                         f"integer channel ids; invalid entry: {entry!r}"
                     ) from error
             return tuple(ids)
+        if isinstance(value, (list, tuple, set)):
+            try:
+                return tuple(int(entry) for entry in value)
+            except (ValueError, TypeError) as error:
+                raise ValueError(
+                    "DISCORD_ALLOWED_CHANNEL_IDS must contain integer channel ids; "
+                    f"invalid entry in: {value!r}"
+                ) from error
         return value
 
     @field_validator("embedding_provider")

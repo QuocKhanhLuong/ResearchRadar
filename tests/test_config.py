@@ -114,3 +114,50 @@ def test_artifact_root_path_resolved(tmp_path: Path) -> None:
     assert resolved == target.expanduser().resolve()
     assert not resolved.exists()
 
+
+def test_readme_and_environment_docs_cover_all_settings_fields() -> None:
+    root = Path(__file__).resolve().parent.parent
+    readme_text = (root / "README.md").read_text(encoding="utf-8")
+    env_doc_text = (root / "docs" / "ENVIRONMENT.md").read_text(encoding="utf-8")
+
+    settings_fields = set(Settings.model_fields.keys())
+
+    for field_name in settings_fields:
+        env_var = field_name.upper()
+        assert f"`{env_var}`" in readme_text, f"README.md missing doc for {env_var}"
+        assert env_var in env_doc_text, f"docs/ENVIRONMENT.md missing doc for {env_var}"
+
+
+
+def test_get_settings_caching() -> None:
+    from research_radar.config import get_settings
+
+    s1 = get_settings()
+    s2 = get_settings()
+    assert s1 is s2
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value", "error_match"),
+    [
+        ("watch_scan_hours", 0, "greater than or equal to 1"),
+        ("watch_scan_hours", 169, "less than or equal to 168"),
+        ("digest_hour", -1, "greater than or equal to 0"),
+        ("digest_hour", 24, "less than or equal to 23"),
+        ("http_timeout_seconds", 0, "greater than 0"),
+        ("http_timeout_seconds", 121, "less than or equal to 120"),
+        ("ingestion_metadata_limit", 0, "greater than or equal to 1"),
+        ("ingestion_metadata_limit", 201, "less than or equal to 200"),
+        ("user_memory_max_results", 0, "greater than or equal to 1"),
+        ("user_memory_max_results", 51, "less than or equal to 50"),
+        ("chat_live_discovery_limit", 0, "greater than or equal to 1"),
+        ("chat_live_discovery_limit", 13, "less than or equal to 12"),
+    ],
+)
+def test_numeric_setting_bounds_validation(
+    field_name: str, invalid_value: int | float, error_match: str
+) -> None:
+    with pytest.raises(ValueError, match=error_match):
+        Settings(**{field_name: invalid_value}, _env_file=None)
+
+

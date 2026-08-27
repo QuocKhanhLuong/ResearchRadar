@@ -127,6 +127,13 @@ def test_discord_allowed_channel_ids_direct_collection_input() -> None:
     settings_tuple = Settings(discord_allowed_channel_ids=(30, 40), _env_file=None)
     assert settings_tuple.discord_allowed_channel_ids == (30, 40)
 
+    settings_str_list = Settings(discord_allowed_channel_ids=["50", "60"], _env_file=None)
+    assert settings_str_list.discord_allowed_channel_ids == (50, 60)
+
+    with pytest.raises(ValidationError, match="DISCORD_ALLOWED_CHANNEL_IDS"):
+        Settings(discord_allowed_channel_ids=["not_an_int"], _env_file=None)
+
+
 
 def test_build_application_bot_constructs_offline_safely(tmp_path: Path) -> None:
     from research_radar.main import build_application_bot
