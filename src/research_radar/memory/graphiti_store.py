@@ -77,31 +77,38 @@ def _as_utc(moment: datetime | None) -> datetime | None:
         return None
     if moment.tzinfo is None:
         return moment.replace(tzinfo=UTC)
-    return moment
+    return moment.astimezone(UTC)
 
 
 def _reference_moment(reference_time: datetime | None) -> datetime:
-    """Return a timezone-aware reference time, defaulting to now."""
+    """Return a timezone-aware reference time, defaulting to now in UTC."""
 
-    moment = reference_time if reference_time is not None else datetime.now(tz=UTC)
-    return moment.astimezone()
+    if reference_time is None:
+        return datetime.now(tz=UTC)
+    if reference_time.tzinfo is None:
+        return reference_time.replace(tzinfo=UTC)
+    return reference_time.astimezone(UTC)
 
 
 def _superseded_at(edge: Any) -> datetime | None:
     """Return when an edge stopped holding, via invalid_at or expired_at."""
 
-    invalid_at = getattr(edge, "invalid_at", None)
+    invalid_at = _as_utc(getattr(edge, "invalid_at", None))
+    expired_at = _as_utc(getattr(edge, "expired_at", None))
+    if invalid_at is not None and expired_at is not None:
+        return min(invalid_at, expired_at)
     if invalid_at is not None:
         return invalid_at
-    return getattr(edge, "expired_at", None)
+    return expired_at
 
 
 def _edge_to_fact(edge: Any) -> MemoryFact:
     """Map one returned EntityEdge onto a MemoryFact, carrying what exists."""
 
     score = getattr(edge, "score", None)
+    raw_fact = getattr(edge, "fact", None)
     return MemoryFact(
-        fact=str(getattr(edge, "fact", "")),
+        fact="" if raw_fact is None else str(raw_fact),
         memory_class=None,
         valid_at=_as_utc(getattr(edge, "valid_at", None)),
         invalid_at=_as_utc(getattr(edge, "invalid_at", None)),
@@ -213,9 +220,7 @@ class GraphitiUserMemoryStore:
                 source_description=source_description,
                 reference_time=_reference_moment(reference_time),
                 group_id=self._group_id,
-                entity_types=(
-                    _memory_entity_type_table() if memory_class is not None else None
-                ),
+                entity_types=(_memory_entity_type_table() if memory_class is not None else None),
             )
         except Exception:
             self._mark_degraded(
@@ -345,6 +350,12 @@ class GraphitiUserMemoryStore:
                     "graphiti user memory initialization failed; degraded until restart",
                 )
             else:
+                if self._closed:
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+                    return False
                 self._client = client
                 return True
             return False
@@ -359,6 +370,7 @@ class GraphitiUserMemoryStore:
         settings = self._settings
         return (
             settings.llm_api_key is None
+            or not settings.llm_api_key.get_secret_value()
             or not settings.llm_base_url
             or not settings.llm_model
         )

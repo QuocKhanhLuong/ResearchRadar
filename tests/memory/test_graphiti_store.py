@@ -14,11 +14,12 @@ import os
 import sys
 import warnings
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 
 from research_radar.config import Settings
 from research_radar.memory import UserMemoryStore
@@ -167,9 +168,7 @@ async def test_initialization_happens_exactly_once_under_concurrency(
     fake = FakeGraphiti()
     factory_calls: list[int] = []
     store = make_store(tmp_path, fake, factory_calls=factory_calls)
-    results = list(
-        await asyncio.gather(*(store.search(f"query {n}") for n in range(8)))
-    )
+    results = list(await asyncio.gather(*(store.search(f"query {n}") for n in range(8))))
     assert all(result == [] for result in results)
     assert len(factory_calls) == 1
     assert fake.build_calls == 1
@@ -303,9 +302,7 @@ async def test_temporal_filtering_and_field_mapping(tmp_path: Path) -> None:
         "expired but never invalidated",
         "expiry scheduled later",
     }
-    august = next(
-        fact for fact in historical_facts if fact.fact == "August preference superseded"
-    )
+    august = next(fact for fact in historical_facts if fact.fact == "August preference superseded")
     assert august.valid_at == now - timedelta(days=60)
     assert august.invalid_at == now - timedelta(days=1)
     assert august.source == "graphiti"
@@ -477,3 +474,146 @@ async def test_missing_llm_configuration_degrades_with_an_actionable_message(
         assert await store.add_episode("I prefer duckdb") is False
         assert await store.search("preferences") == []
         await store.close()
+
+
+async def test_missing_llm_configuration_with_empty_secret(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An empty SecretStr for LLM_API_KEY must also degrade cleanly without touching disk."""
+
+    settings = make_settings(tmp_path, llm_api_key=SecretStr(""))
+    built = False
+
+    def _never_called() -> object:  # pragma: no cover
+        nonlocal built
+        built = True
+        raise AssertionError("client factory ran despite empty LLM_API_KEY")
+
+    store = GraphitiUserMemoryStore(settings, client_factory=_never_called)
+    with caplog.at_level(logging.WARNING):
+        status = await store.status()
+
+    assert built is False
+    assert status.healthy is False
+    messages = " ".join(record.getMessage() for record in warning_records(caplog))
+    assert "LLM_API_KEY" in messages
+    assert not settings.user_memory_db_path_resolved().parent.exists()
+    assert await store.add_episode("test content") is False
+    await store.close()
+
+
+async def test_temporal_filtering_with_both_invalid_at_and_expired_at(
+    tmp_path: Path,
+) -> None:
+    """When both invalid_at and expired_at are set, the earliest determines status."""
+
+    now = datetime.now(tz=UTC)
+    fake = FakeGraphiti(
+        edges=[
+            FakeEdge(
+                fact="invalid in future but expired in past",
+                invalid_at=now + timedelta(days=30),
+                expired_at=now - timedelta(days=2),
+            ),
+            FakeEdge(
+                fact="invalid in past but expired in future",
+                invalid_at=now - timedelta(days=2),
+                expired_at=now + timedelta(days=30),
+            ),
+            FakeEdge(
+                fact="both in future",
+                invalid_at=now + timedelta(days=10),
+                expired_at=now + timedelta(days=20),
+            ),
+            FakeEdge(
+                fact="non-UTC timezone aware past invalidation",
+                invalid_at=datetime(2020, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=7))),
+            ),
+        ]
+    )
+    store = make_store(tmp_path, fake)
+    current_facts = await store.search("testing temporal combinations", limit=10)
+    assert [f.fact for f in current_facts] == ["both in future"]
+
+    all_facts = await store.search(
+        "testing temporal combinations", limit=10, include_historical=True
+    )
+    assert len(all_facts) == 4
+    non_utc_fact = next(
+        f for f in all_facts if f.fact == "non-UTC timezone aware past invalidation"
+    )
+    assert non_utc_fact.invalid_at == datetime(2020, 1, 1, 5, 0, 0, tzinfo=UTC)
+    await store.close()
+
+
+async def test_reference_time_normalization_in_add_episode(tmp_path: Path) -> None:
+    """Naive and non-UTC reference times are normalized to aware UTC."""
+
+    fake = FakeGraphiti()
+    store = make_store(tmp_path, fake)
+
+    naive_time = datetime(2026, 6, 15, 10, 30, 0)
+    assert await store.add_episode("naive time episode", reference_time=naive_time) is True
+    call1_time = fake.add_episode_calls[0]["reference_time"]
+    assert call1_time.tzinfo is not None
+    assert call1_time == datetime(2026, 6, 15, 10, 30, 0, tzinfo=UTC)
+
+    aware_offset_time = datetime(2026, 6, 15, 17, 30, 0, tzinfo=timezone(timedelta(hours=7)))
+    assert await store.add_episode("aware offset episode", reference_time=aware_offset_time) is True
+    call2_time = fake.add_episode_calls[1]["reference_time"]
+    assert call2_time.tzinfo is not None
+    assert call2_time == datetime(2026, 6, 15, 10, 30, 0, tzinfo=UTC)
+
+    await store.close()
+
+
+async def test_edge_with_none_or_missing_fact_maps_safely(tmp_path: Path) -> None:
+    """Edges with fact=None or missing attributes map cleanly without crashing."""
+
+    fake = FakeGraphiti(edges=[FakeEdge(fact=None)])  # type: ignore[arg-type]
+    store = make_store(tmp_path, fake)
+    facts = await store.search("check empty fact", limit=5)
+    assert len(facts) == 1
+    assert facts[0].fact == ""
+    assert facts[0].score is None
+    await store.close()
+
+
+async def test_add_episode_empty_or_whitespace_skipped(tmp_path: Path) -> None:
+    """Empty or whitespace-only episode content returns False without calling backend."""
+
+    fake = FakeGraphiti()
+    store = make_store(tmp_path, fake)
+    assert await store.add_episode("") is False
+    assert await store.add_episode("   \n\t  ") is False
+    assert len(fake.add_episode_calls) == 0
+    await store.close()
+
+
+async def test_close_during_initialization_closes_client(tmp_path: Path) -> None:
+    """If store.close() is called while initialization is running, client is closed."""
+
+    fake = FakeGraphiti()
+
+    def slow_factory() -> FakeGraphiti:
+        return fake
+
+    store = GraphitiUserMemoryStore(make_settings(tmp_path), client_factory=slow_factory)
+    store._closed = True
+    assert await store._ensure_initialized() is False
+    await store.close()
+
+
+async def test_close_failure_logs_warning_once_and_does_not_raise(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When the underlying client raises on close(), it logs once and does not raise."""
+
+    fake = FakeGraphiti(fail_methods={"close"})
+    store = make_store(tmp_path, fake)
+    assert await store.search("warm up") == []
+    with caplog.at_level(logging.WARNING):
+        await store.close()
+        await store.close()
+    assert len(warning_records(caplog)) == 1
+    assert "closing" in caplog.text
