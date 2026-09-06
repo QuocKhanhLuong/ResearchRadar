@@ -1,0 +1,31 @@
+{
+  "airtable": {
+    "base_id": "app9IpgoLjTQYwsW4",
+    "workstreams_table": "tblz0lYOWfVaMynOY",
+    "checklogs_table": "tbl3DVjsUaw3VC62q"
+  },
+  "timezone": "Asia/Bangkok",
+  "lookback_hours": 36,
+  "projects": [
+    {
+      "name": "Self-Audit",
+      "repo": "QuocKhanhLuong/Self-Audit",
+      "workstream_record_id": "recrSruWtWSL0FzRT"
+    },
+    {
+      "name": "MamaGift",
+      "repo": "QuocKhanhLuong/MamaGift",
+      "workstream_record_id": "recDLONAnENambfdu"
+    },
+    {
+      "name": "ResearchRadar",
+      "repo": "QuocKhanhLuong/ResearchRadar",
+      "workstream_record_id": "recGHHu9JC9D4iMyH"
+    },
+    {
+      "name": "3DGS",
+      "repo": "QuocKhanhLuong/3DGS",
+      "workstream_record_id": "recLP3hp41Om67IoL"
+    }
+  ]
+}
